@@ -19,7 +19,7 @@ TEST_OBJECTS = $(OBJDIR)/test_emu88.o
 CLI_SOURCES = $(SRCDIR)/main_cli.cc
 CLI_OBJECTS = $(OBJDIR)/main_cli.o
 
-all: test_emu88 dosemu
+all: test_emu88 dosemu_cli
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
@@ -27,13 +27,13 @@ $(OBJDIR):
 $(OBJDIR)/%.o: $(SRCDIR)/%.cc | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-dosemu: $(CORE_OBJECTS) $(DOS_OBJECTS) $(CLI_OBJECTS)
+dosemu_cli: $(CORE_OBJECTS) $(DOS_OBJECTS) $(CLI_OBJECTS)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
 test_emu88: $(CORE_OBJECTS) $(TEST_OBJECTS)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
 clean:
-	rm -rf $(OBJDIR) test_emu88 dosemu
+	rm -rf $(OBJDIR) test_emu88 dosemu_cli
 
 .PHONY: all clean

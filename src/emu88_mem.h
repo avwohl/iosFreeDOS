@@ -32,6 +32,9 @@ public:
 
   virtual emu88_uint16 fetch_mem16(emu88_uint32 addr);
   virtual void store_mem16(emu88_uint32 addr, emu88_uint16 aword);
+
+  virtual emu88_uint32 fetch_mem32(emu88_uint32 addr);
+  virtual void store_mem32(emu88_uint32 addr, emu88_uint32 adword);
 };
 
 #endif // EMU88_MEM_H

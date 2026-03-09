@@ -1,5 +1,6 @@
 obj/
 test_emu88
+dosemu_cli
 *.o
 *~
 .DS_Store
@@ -10,3 +11,6 @@ debug.log
 DOSEmu.xcodeproj/
 Local.xcconfig
 fd/x86*.img
+fd/*_dev.img
+fd/freedos_hd.img
+fd/games/

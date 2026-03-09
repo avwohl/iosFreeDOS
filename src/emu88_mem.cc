@@ -28,3 +28,12 @@ void emu88_mem::store_mem16(emu88_uint32 addr, emu88_uint16 aword) {
   store_mem(addr, aword & 0xFF);
   store_mem(addr + 1, (aword >> 8) & 0xFF);
 }
+
+emu88_uint32 emu88_mem::fetch_mem32(emu88_uint32 addr) {
+  return fetch_mem16(addr) | (emu88_uint32(fetch_mem16(addr + 2)) << 16);
+}
+
+void emu88_mem::store_mem32(emu88_uint32 addr, emu88_uint32 adword) {
+  store_mem16(addr, adword & 0xFFFF);
+  store_mem16(addr + 2, (adword >> 16) & 0xFFFF);
+}

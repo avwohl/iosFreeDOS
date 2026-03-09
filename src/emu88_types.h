@@ -9,6 +9,10 @@ typedef uint16_t emu88_uint16;
 typedef int16_t emu88_int16;
 typedef uint32_t emu88_uint32;
 typedef int32_t emu88_int32;
+typedef uint64_t emu88_uint64;
+typedef int64_t emu88_int64;
+
+#define EMU88_MK32(lo16, hi16) ((emu88_uint32(hi16) << 16) | emu88_uint32(lo16))
 
 #define EMU88_GET_LOW8(x) ((x) & 0xFF)
 #define EMU88_GET_HIGH8(x) (((x) >> 8) & 0xFF)

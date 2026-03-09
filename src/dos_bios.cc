@@ -342,6 +342,9 @@ void dos_machine::bios_int10h() {
     case 0x10: {  // Color palette - stub
       break;
     }
+    case 0x0B: {  // Set color palette - stub
+      break;
+    }
     case 0x11: {  // Character generator - stub
       // AH=11h AL=30h: Get font info
       if (al == 0x30) {
@@ -358,6 +361,63 @@ void dos_machine::bios_int10h() {
         set_reg8(reg_CH, 0);
         set_reg8(reg_CL, 0);
       }
+      break;
+    }
+    case 0x13: {  // Write string
+      // AL: write mode (bit0=update cursor, bit1=string has attrs)
+      // BH: page, BL: attr (modes 0-1), CX: length
+      // DH: row, DL: col, ES:BP -> string
+      uint8_t mode = al;
+      uint8_t page = get_reg8(reg_BH);
+      uint8_t attr = get_reg8(reg_BL);
+      int count = regs[reg_CX];
+      int row = get_reg8(reg_DH);
+      int col = get_reg8(reg_DL);
+      uint32_t str_addr = EMU88_MK20(sregs[seg_ES], regs[reg_BP]);
+
+      // Save and set cursor position for writing
+      uint16_t old_pos = bda_r16(bda::CURSOR_POS + page * 2);
+      bda_w16(bda::CURSOR_POS + page * 2, (row << 8) | col);
+
+      uint32_t base = vram_base() + page * bda_r16(bda::VIDEO_PAGE_SZ);
+
+      for (int i = 0; i < count; i++) {
+        uint8_t ch;
+        uint8_t char_attr;
+        if (mode & 0x02) {
+          // String contains char/attr pairs
+          ch = mem->fetch_mem(str_addr++);
+          char_attr = mem->fetch_mem(str_addr++);
+        } else {
+          ch = mem->fetch_mem(str_addr++);
+          char_attr = attr;
+        }
+
+        // Handle control characters via TTY-like behavior
+        if (ch == 0x07 || ch == 0x08 || ch == 0x0A || ch == 0x0D) {
+          video_tty(ch);
+        } else {
+          // Write char at current cursor position
+          uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
+          int cr = (pos >> 8) & 0xFF;
+          int cc = pos & 0xFF;
+          int off = (cr * screen_cols + cc) * 2;
+          mem->store_mem(base + off, ch);
+          mem->store_mem(base + off + 1, char_attr);
+          // Advance cursor
+          cc++;
+          if (cc >= screen_cols) { cc = 0; cr++; }
+          if (cr >= screen_rows) {
+            cr = screen_rows - 1;
+            video_scroll(0, 0, 0, screen_rows - 1, screen_cols - 1, 1, char_attr);
+          }
+          bda_w16(bda::CURSOR_POS + page * 2, (cr << 8) | cc);
+        }
+      }
+
+      // Restore cursor if mode says don't update
+      if (!(mode & 0x01))
+        bda_w16(bda::CURSOR_POS + page * 2, old_pos);
       break;
     }
     case 0x1A: {  // Get/set display combination code
@@ -625,7 +685,6 @@ void dos_machine::bios_int13h() {
         fprintf(stderr, "  [EXT READ] LBA=%u count=%u -> %04X:%04X secsize=%d\n",
                 lba_lo, count, buf_seg, buf_off, sec_size);
 #endif
-
       uint16_t sectors_read = 0;
       for (uint16_t i = 0; i < count; i++) {
         uint8_t buf[2048];
@@ -821,13 +880,20 @@ void dos_machine::bios_int15h() {
       clear_flag(FLAG_CF);
       break;
     }
+    case 0x91:  // Interrupt complete (device post) - no-op
+      clear_flag(FLAG_CF);
+      break;
     case 0xC0: {  // Get system configuration
-      // Return pointer to a config table in ROM
-      // For now, return not supported
-      set_reg8(reg_AH, 0x86);
-      set_flag(FLAG_CF);
+      // Return pointer to system config table at F000:E6F5
+      sregs[seg_ES] = 0xF000;
+      regs[reg_BX] = 0xE6F5;
+      set_reg8(reg_AH, 0);
+      clear_flag(FLAG_CF);
       break;
     }
+    case 0x4F:  // Keyboard intercept - let key through
+      set_flag(FLAG_CF);  // CF=1 = process key normally
+      break;
     case 0x24:  // A20 gate support
       set_reg8(reg_AH, 0x86);
       set_flag(FLAG_CF);
@@ -880,8 +946,14 @@ void dos_machine::bios_int16h() {
 
       if (head == tail) {
         set_flag(FLAG_ZF);  // No key
+        // Track consecutive no-key polls; high threshold avoids triggering
+        // during DOS Ctrl-C checks but catches tight polling loops at prompts
+        kbd_poll_count++;
+        if (kbd_poll_count >= KBD_POLL_THRESHOLD)
+          waiting_for_key = true;
         return;
       }
+      kbd_poll_count = 0;
 
       // Peek at key (don't remove)
       uint8_t ascii = mem->fetch_mem(0x400 + head);
@@ -898,6 +970,8 @@ void dos_machine::bios_int16h() {
         set_reg8(reg_AH, bda_r8(bda::KBD_FLAGS2));
       break;
     }
+    case 0x03:  // Set typematic rate - stub (no hardware to control)
+      break;
     case 0x05: {  // Store key in buffer
       uint8_t ascii = get_reg8(reg_CL);
       uint8_t scan = get_reg8(reg_CH);
@@ -905,6 +979,9 @@ void dos_machine::bios_int16h() {
       set_reg8(reg_AL, 0);
       break;
     }
+    case 0x09:  // Get keyboard functionality - report enhanced keyboard
+      set_reg8(reg_AL, 0x20);  // Enhanced keyboard support
+      break;
     default:
       break;
   }
