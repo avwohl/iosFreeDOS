@@ -188,6 +188,14 @@ void dos_machine::cursor_advance() {
 }
 
 void dos_machine::video_tty(uint8_t ch) {
+  // Show version banner before the first printable character
+  if (!banner_shown && ch >= 0x20) {
+    banner_shown = true;
+    const char *banner = "iosFreeDOS " IOSFREEDOS_VERSION "\r\n";
+    for (int i = 0; banner[i]; i++)
+      video_tty(banner[i]);
+  }
+
   int page = bda_r8(bda::ACTIVE_PAGE);
   uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
   int row = (pos >> 8) & 0xFF;

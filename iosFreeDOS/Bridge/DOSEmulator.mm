@@ -462,7 +462,8 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
 - (DOSControlifyMode)getControlify { return _controlifyMode; }
 
 - (void)setSpeed:(DOSSpeedMode)mode {
-    if (_machine) _machine->set_speed(static_cast<dos_machine::SpeedMode>(mode));
+    _config.speed = static_cast<dos_machine::SpeedMode>(mode);
+    if (_machine) _machine->set_speed(_config.speed);
 }
 
 - (DOSSpeedMode)getSpeed {

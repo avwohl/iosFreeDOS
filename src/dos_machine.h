@@ -73,6 +73,7 @@ public:
   // Machine configuration
   struct Config {
     DisplayAdapter display = DISPLAY_CGA;
+    SpeedMode speed = SPEED_PC_4_77;
     bool mouse_enabled = true;
     bool speaker_enabled = true;
     // Sound card type: 0=none, 1=Adlib, 2=SoundBlaster (future)
@@ -164,6 +165,9 @@ private:
   // Speed control
   SpeedMode speed_mode;
   uint32_t target_cps;  // Target cycles per second (0 = unlimited)
+
+  // Boot banner (shown once on first TTY output)
+  bool banner_shown;
 
   // Keyboard wait state
   bool waiting_for_key;

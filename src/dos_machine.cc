@@ -13,6 +13,7 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
       port_b(0), crtc_index(0),
       tick_cycle_mark(0), refresh_cycle_mark(0),
       speed_mode(SPEED_FULL), target_cps(0),
+      banner_shown(false),
       waiting_for_key(false),
       kbd_poll_count(0),
       kbd_poll_start_cycle(0),
@@ -70,6 +71,7 @@ uint32_t dos_machine::bda_r32(int off) {
 
 void dos_machine::configure(const Config &cfg) {
   config = cfg;
+  set_speed(cfg.speed);
 }
 
 //=============================================================================
@@ -287,18 +289,7 @@ bool dos_machine::boot(int drive) {
   bool use_mda = (config.display == DISPLAY_MDA || config.display == DISPLAY_HERCULES);
   int init_mode = use_mda ? 7 : 3;
   video_set_mode(init_mode);
-
-  // Write boot banner to top of screen before DOS starts
-  {
-    const char *banner = "iosFreeDOS " IOSFREEDOS_VERSION;
-    uint32_t base = vram_base();
-    for (int i = 0; banner[i]; i++) {
-      mem->store_mem(base + i * 2, banner[i]);
-      mem->store_mem(base + i * 2 + 1, 0x08);  // dark gray on black
-    }
-    // Position cursor on line 2 so DOS output starts below
-    bda_w16(bda::CURSOR_POS, (2 << 8) | 0);
-  }
+  banner_shown = false;
 
   io->video_mode_changed(init_mode, 80, 25);
   return true;
