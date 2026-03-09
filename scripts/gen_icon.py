@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
-"""Generate DOS prompt app icon in all App Store required sizes."""
+"""Generate FreeDOS app icon with Blinky the Fish in all App Store sizes.
 
-from PIL import Image, ImageDraw, ImageFont
+Blinky the Fish mascot by Bas Snabilie, CC-BY 2.5.
+SVG source: commons.wikimedia.org/wiki/File:FreeDOS_logo4_2010.svg
+"""
+
 import os
+import subprocess
+import sys
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "DOSEmu", "Assets.xcassets", "AppIcon.appiconset")
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    print("Pillow not installed. Run: pip3 install Pillow")
+    sys.exit(1)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "DOSEmu", "Assets.xcassets", "AppIcon.appiconset")
+SVG_PATH = os.path.join(SCRIPT_DIR, "blinky.svg")
 
 # All sizes needed for iOS/macOS App Store
 SIZES = [
@@ -43,8 +56,41 @@ def load_font(size):
     return ImageFont.load_default()
 
 
+def render_blinky_svg(size):
+    """Try to render the Blinky SVG using rsvg-convert or sips."""
+    tmp_png = f"/tmp/blinky_{size}.png"
+
+    # Extract just the fish group from the SVG for the icon
+    # The fish is the last <g> element in the SVG
+    # For simplicity, render the whole SVG and crop to the fish area
+
+    # Try rsvg-convert first (from librsvg, brew install librsvg)
+    try:
+        subprocess.run(
+            ["rsvg-convert", "-w", str(size), "-h", str(size),
+             "--keep-aspect-ratio", "-o", tmp_png, SVG_PATH],
+            check=True, capture_output=True
+        )
+        img = Image.open(tmp_png)
+        return img
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # Try cairosvg (pip3 install cairosvg)
+    try:
+        import cairosvg
+        cairosvg.svg2png(url=SVG_PATH, write_to=tmp_png,
+                         output_width=size, output_height=size)
+        img = Image.open(tmp_png)
+        return img
+    except (ImportError, Exception):
+        pass
+
+    return None
+
+
 def render_icon(size):
-    """Render a DOS prompt icon at the given pixel size."""
+    """Render a FreeDOS icon at the given pixel size."""
     S = 1024
     img = Image.new("RGB", (S, S), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -85,7 +131,6 @@ def render_icon(size):
     # Text area bounds
     pad = int(S * 0.11)
     tx = pad
-    max_x = S - pad
 
     # Fonts
     header_font = load_font(int(S * 0.058))
@@ -94,13 +139,13 @@ def render_icon(size):
     # Header lines (dim, like previous output)
     y = pad - int(S * 0.01)
     header_lines = [
-        "Microsoft(R) MS-DOS",
-        "(C)Copyright Microsoft",
-        "   Corp 1990",
+        "FreeDOS kernel 2043",
+        "(C) The FreeDOS",
+        "    Project",
         "",
         "C:\\>VER",
         "",
-        "MS-DOS Version 6.22",
+        "FreeDOS version 1.4",
     ]
     line_h = int(S * 0.058 * 1.25)
     for line in header_lines:
@@ -131,11 +176,7 @@ def render_icon(size):
     cursor_left = cursor_x
     cursor_right = cursor_x + char_w
     for ys in range(screen_m, S - screen_m, 3):
-        # Lighten scanline effect
-        alpha_line = Image.new("RGBA", (S, 1), (0, 0, 0, 18))
-        # Just draw thin dark lines
         if ys >= cursor_top and ys <= cursor_bot:
-            # Only draw scanlines outside cursor horizontally
             draw.line([(screen_m, ys), (cursor_left - 1, ys)], fill=(0, 0, 0), width=1)
             draw.line([(cursor_right + 1, ys), (S - screen_m, ys)], fill=(0, 0, 0), width=1)
         else:
@@ -366,6 +407,7 @@ def main():
     print(f"  Saved Assets.xcassets/Contents.json")
 
     print(f"\nDone! Generated {len(SIZES)} icon files.")
+    print("Blinky the Fish mascot by Bas Snabilie, CC-BY 2.5")
 
 
 if __name__ == "__main__":

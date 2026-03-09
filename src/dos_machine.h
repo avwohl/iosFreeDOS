@@ -3,8 +3,10 @@
 
 #include "emu88.h"
 #include "dos_io.h"
+#include "ne2000.h"
 
 // PC memory map
+static constexpr uint32_t VGA_VRAM_BASE  = 0xA0000;
 static constexpr uint32_t MDA_VRAM_BASE  = 0xB0000;
 static constexpr uint32_t CGA_VRAM_BASE  = 0xB8000;
 static constexpr uint32_t BIOS_ROM_BASE  = 0xF0000;
@@ -42,11 +44,16 @@ namespace bda {
 class dos_machine : public emu88 {
 public:
   // Speed modes
+  // CPS values compensate for 8088-based cycle table: 386+ speeds use
+  // a ~3x multiplier so programs run at correct wall-clock speed despite
+  // the cycle table counting 8088-era costs per instruction.
   enum SpeedMode {
-    SPEED_FULL = 0,    // No throttling
-    SPEED_PC_4_77 = 1, // IBM PC 4.77 MHz (4,770,000 cycles/sec)
-    SPEED_AT_8 = 2,    // IBM AT 8 MHz (8,000,000 cycles/sec)
-    SPEED_TURBO = 3    // 386/25 MHz (25,000,000 cycles/sec)
+    SPEED_FULL = 0,        // No throttling
+    SPEED_PC_4_77 = 1,     // IBM PC 8088 4.77 MHz
+    SPEED_AT_8 = 2,        // IBM AT 286 8 MHz
+    SPEED_386SX_16 = 3,    // 386SX 16 MHz
+    SPEED_386DX_33 = 4,    // 386DX 33 MHz
+    SPEED_486DX2_66 = 5    // 486DX2 66 MHz
   };
 
   // Display adapter
@@ -54,7 +61,9 @@ public:
     DISPLAY_CGA = 0,
     DISPLAY_MDA = 1,
     DISPLAY_HERCULES = 2,
-    DISPLAY_CGA_MDA = 3   // Dual: both adapters active
+    DISPLAY_CGA_MDA = 3,  // Dual: both adapters active
+    DISPLAY_EGA = 4,
+    DISPLAY_VGA = 5
   };
 
   // Machine configuration
@@ -65,9 +74,14 @@ public:
     // Sound card type: 0=none, 1=Adlib, 2=SoundBlaster (future)
     int sound_card = 0;
     bool cdrom_enabled = true;
+    // NE2000 NIC
+    bool ne2000_enabled = false;
+    uint16_t ne2000_iobase = 0x300;
+    int ne2000_irq = 3;
   };
 
   dos_machine(emu88_mem *memory, dos_io *io);
+  ~dos_machine();
 
   // Machine lifecycle
   void configure(const Config &cfg);
@@ -86,6 +100,8 @@ public:
   void do_interrupt(emu88_uint8 vector) override;
   void port_out(emu88_uint16 port, emu88_uint8 value) override;
   emu88_uint8 port_in(emu88_uint16 port) override;
+  void port_out16(emu88_uint16 port, emu88_uint16 value) override;
+  emu88_uint16 port_in16(emu88_uint16 port) override;
   void unimplemented_opcode(emu88_uint8 opcode) override;
 
   // Keyboard input from host
@@ -93,6 +109,9 @@ public:
 
   // Check if waiting for keyboard input (for host yield)
   bool is_waiting_for_key() const { return waiting_for_key; }
+
+  // Configure display adapter (must be called before boot)
+  void set_display(DisplayAdapter adapter) { config.display = adapter; }
 
 private:
   dos_io *io;
@@ -122,6 +141,13 @@ private:
   uint8_t crtc_index;
   uint8_t crtc_regs[256];
 
+  // VGA DAC palette (256 colors, RGB 0-63 each)
+  uint8_t vga_dac[256][3];
+  uint8_t dac_write_index;
+  uint8_t dac_read_index;
+  uint8_t dac_component;  // 0=R, 1=G, 2=B
+  uint8_t dac_pel_mask;   // Palette mask (port 0x3C6)
+
   // Timer / refresh counters (cycle-based)
   unsigned long long tick_cycle_mark;
   unsigned long long refresh_cycle_mark;
@@ -138,15 +164,23 @@ private:
   // Keyboard wait state
   bool waiting_for_key;
   int kbd_poll_count;  // Consecutive AH=01 no-key responses
+  unsigned long long kbd_poll_start_cycle;  // Cycle count when polling started
 
   // How many consecutive AH=01 "no key" polls before yielding.
   // Must be high enough to avoid triggering during DOS Ctrl-C checks
   // during file I/O (~5-20 per batch), but low enough to catch tight
   // polling loops at prompts (~5000+ per batch).
   static constexpr int KBD_POLL_THRESHOLD = 500;
+  // Minimum emulated time of continuous polling before yielding (~3 ticks = 165ms)
+  static constexpr uint32_t KBD_POLL_MIN_CYCLES = CYCLES_PER_TICK * 3;
 
   // Keyboard controller command state (for A20 gate)
   uint8_t kbd_cmd_pending;
+
+  // NE2000 NIC
+  ne2000 *nic;
+  uint16_t ne2000_base;
+  int ne2000_irq;
 
   // Machine config
   Config config;
@@ -171,6 +205,17 @@ private:
     uint16_t handler_off = 0;
   } mouse;
 
+  // XMS driver state
+  static constexpr int XMS_MAX_HANDLES = 32;
+  struct xms_handle {
+    bool allocated = false;
+    uint32_t base = 0;    // Physical address (bytes)
+    uint32_t size_kb = 0; // Size in KB
+    uint8_t lock_count = 0;
+  };
+  xms_handle xms_handles[XMS_MAX_HANDLES];
+  uint16_t xms_entry_off;  // ROM offset for XMS entry point
+
   // BIOS ROM entry points (offset within F000 segment)
   uint16_t bios_entry[256];
 
@@ -194,7 +239,12 @@ private:
   void bios_int17h();   // Printer
   void bios_int19h();   // Bootstrap loader
   void bios_int1ah();   // Time/date
+  void bios_int2fh();   // Multiplex (XMS)
   void bios_int33h();   // Mouse driver
+  void bios_int_e0h();  // Host file services
+
+  // XMS dispatch (called via FAR CALL to ROM entry point)
+  void xms_dispatch();
 
   // BIOS trap dispatch
   void dispatch_bios(uint8_t vector);

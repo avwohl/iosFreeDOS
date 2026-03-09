@@ -60,6 +60,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     @Published var cursorRow: Int = 0
     @Published var cursorCol: Int = 0
     @Published var terminalShouldFocus: Bool = false
+    @Published var gfxImage: UIImage? = nil  // VGA mode 13h framebuffer
     let terminalRows = 25
     let terminalCols = 80
 
@@ -77,7 +78,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     @Published var hddCPath: URL? = nil
     @Published var hddDPath: URL? = nil
     @Published var isoPath: URL? = nil
-    @Published var bootDrive: Int = 0
+    // bootDrive is stored per-config (config.bootDrive)
 
     // File picker
     @Published var showingDiskPicker: Bool = false
@@ -222,7 +223,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         isRunning = true
         terminalShouldFocus = true
         manifestWriteWarningShown = false
-        emulator?.start(withBootDrive: Int32(bootDrive))
+        emulator?.start(withBootDrive: Int32(config.bootDrive))
 
         diskSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.saveAllDisks()
@@ -292,24 +293,32 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     func setDiskPath(_ unit: Int, url: URL, bookmark: Data? = nil) {
         switch unit {
         case 0:
-            floppyAPath = url; bootDrive = 0
+            floppyAPath = url
             if let b = bookmark { UserDefaults.standard.set(b, forKey: "floppyABookmark") }
+            setConfigBootDrive(0)
         case 1:
             floppyBPath = url
             if let b = bookmark { UserDefaults.standard.set(b, forKey: "floppyBBookmark") }
         case 0x80:
-            hddCPath = url; if floppyAPath == nil { bootDrive = 0x80 }
+            hddCPath = url
             if let b = bookmark { UserDefaults.standard.set(b, forKey: "hddCBookmark") }
+            if floppyAPath == nil { setConfigBootDrive(0x80) }
         case 0x81:
             hddDPath = url
             if let b = bookmark { UserDefaults.standard.set(b, forKey: "hddDBookmark") }
         case 0xE0:
             isoPath = url
-            if floppyAPath == nil && hddCPath == nil { bootDrive = 0xE0 }
             if let b = bookmark { UserDefaults.standard.set(b, forKey: "isoBookmark") }
+            if floppyAPath == nil && hddCPath == nil { setConfigBootDrive(0xE0) }
         default: break
         }
         statusText = "Loaded \(url.lastPathComponent)"
+    }
+
+    private func setConfigBootDrive(_ drive: Int) {
+        var cfg = config
+        cfg.bootDrive = drive
+        configManager.updateConfig(cfg)
     }
 
     func saveDisk(_ unit: Int) {
@@ -326,7 +335,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         let url = disksDirectory.appendingPathComponent("floppy_\(sizeKB)KB.img")
         do {
             try data.write(to: url)
-            floppyAPath = url; bootDrive = 0
+            floppyAPath = url; setConfigBootDrive(0)
             UserDefaults.standard.removeObject(forKey: "floppyABookmark")
             statusText = "Created \(sizeKB)KB floppy"
         } catch {
@@ -339,7 +348,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         if FileManager.default.createFile(atPath: url.path, contents: nil) {
             FileHandle(forWritingAtPath: url.path)?.truncateFile(atOffset: UInt64(sizeMB) * 1024 * 1024)
             hddCPath = url
-            if floppyAPath == nil { bootDrive = 0x80 }
+            if floppyAPath == nil { setConfigBootDrive(0x80) }
             UserDefaults.standard.removeObject(forKey: "hddCBookmark")
             statusText = "Created \(sizeMB)MB hard disk"
         } else {
@@ -371,12 +380,13 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     }
 
     private func restoreDiskBindings() {
+        // Only restore paths; boot drive is persisted per-config
         for (key, setter): (String, (URL) -> Void) in [
-            ("floppyABookmark", { [weak self] u in self?.floppyAPath = u; self?.bootDrive = 0 }),
+            ("floppyABookmark", { [weak self] u in self?.floppyAPath = u }),
             ("floppyBBookmark", { [weak self] u in self?.floppyBPath = u }),
-            ("hddCBookmark", { [weak self] u in self?.hddCPath = u; if self?.floppyAPath == nil { self?.bootDrive = 0x80 } }),
+            ("hddCBookmark", { [weak self] u in self?.hddCPath = u }),
             ("hddDBookmark", { [weak self] u in self?.hddDPath = u }),
-            ("isoBookmark", { [weak self] u in self?.isoPath = u; if self?.floppyAPath == nil && self?.hddCPath == nil { self?.bootDrive = 0xE0 } })
+            ("isoBookmark", { [weak self] u in self?.isoPath = u })
         ] {
             if let data = UserDefaults.standard.data(forKey: key) {
                 var stale = false
@@ -507,11 +517,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         let path = disksDirectory.appendingPathComponent(disk.filename)
         guard FileManager.default.fileExists(atPath: path.path) else { return }
         switch drive {
-        case 0: floppyAPath = path; bootDrive = 0
+        case 0: floppyAPath = path; setConfigBootDrive(0)
         case 1: floppyBPath = path
-        case 0x80: hddCPath = path; if floppyAPath == nil { bootDrive = 0x80 }
+        case 0x80: hddCPath = path; if floppyAPath == nil { setConfigBootDrive(0x80) }
         case 0x81: hddDPath = path
-        case 0xE0: isoPath = path; if floppyAPath == nil && hddCPath == nil { bootDrive = 0xE0 }
+        case 0xE0: isoPath = path; if floppyAPath == nil && hddCPath == nil { setConfigBootDrive(0xE0) }
         default: break
         }
         manifestDrives.insert(drive)
@@ -537,11 +547,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                 do {
                     try FileManager.default.moveItem(at: temp, to: dest)
                     switch drive {
-                    case 0: self.floppyAPath = dest; self.bootDrive = 0
+                    case 0: self.floppyAPath = dest; self.setConfigBootDrive(0)
                     case 1: self.floppyBPath = dest
-                    case 0x80: self.hddCPath = dest; if self.floppyAPath == nil { self.bootDrive = 0x80 }
+                    case 0x80: self.hddCPath = dest; if self.floppyAPath == nil { self.setConfigBootDrive(0x80) }
                     case 0x81: self.hddDPath = dest
-                    case 0xE0: self.isoPath = dest; if self.floppyAPath == nil && self.hddCPath == nil { self.bootDrive = 0xE0 }
+                    case 0xE0: self.isoPath = dest; if self.floppyAPath == nil && self.hddCPath == nil { self.setConfigBootDrive(0xE0) }
                     default: break
                     }
                     self.statusText = "Downloaded \(filename)"
@@ -573,7 +583,35 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         terminalCells = newCells
     }
 
-    func emulatorVideoModeChanged(_ mode: Int32, cols: Int32, rows: Int32) { clearTerminal() }
+    func emulatorVideoRefreshGfx(_ framebuf: Data, width: Int32, height: Int32, palette: Data) {
+        let w = Int(width), h = Int(height)
+        let fbBytes = [UInt8](framebuf)
+        let palBytes = [UInt8](palette)
+        // Build RGBA bitmap
+        var rgba = [UInt8](repeating: 255, count: w * h * 4)
+        for i in 0..<(w * h) {
+            let idx = Int(fbBytes[i])
+            let r = Int(palBytes[idx * 3]) * 255 / 63
+            let g = Int(palBytes[idx * 3 + 1]) * 255 / 63
+            let b = Int(palBytes[idx * 3 + 2]) * 255 / 63
+            rgba[i * 4] = UInt8(r)
+            rgba[i * 4 + 1] = UInt8(g)
+            rgba[i * 4 + 2] = UInt8(b)
+            rgba[i * 4 + 3] = 255
+        }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        if let ctx = CGContext(data: &rgba, width: w, height: h, bitsPerComponent: 8,
+                               bytesPerRow: w * 4, space: colorSpace,
+                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+           let cgImage = ctx.makeImage() {
+            gfxImage = UIImage(cgImage: cgImage)
+        }
+    }
+
+    func emulatorVideoModeChanged(_ mode: Int32, cols: Int32, rows: Int32) {
+        gfxImage = nil
+        clearTerminal()
+    }
     func emulatorVideoSetCursorRow(_ row: Int32, col: Int32) { cursorRow = Int(row); cursorCol = Int(col) }
     func emulatorDidRequestInput() { if !terminalShouldFocus { terminalShouldFocus = true } }
 }

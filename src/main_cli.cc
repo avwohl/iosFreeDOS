@@ -296,6 +296,30 @@ public:
     fflush(stdout);
   }
 
+  void video_refresh_gfx(const uint8_t *framebuf, int width, int height,
+                          const uint8_t palette[][3]) override {
+    // Render VGA mode 13h using ANSI true color and half-block characters
+    // Each terminal row represents 2 pixel rows using '▀' (upper half block)
+    printf("\033[H");
+    for (int y = 0; y < height; y += 2) {
+      for (int x = 0; x < width; x++) {
+        uint8_t top_idx = framebuf[y * width + x];
+        uint8_t bot_idx = (y + 1 < height) ? framebuf[(y + 1) * width + x] : 0;
+        // Scale VGA DAC (0-63) to RGB (0-255)
+        int tr = palette[top_idx][0] * 255 / 63;
+        int tg = palette[top_idx][1] * 255 / 63;
+        int tb = palette[top_idx][2] * 255 / 63;
+        int br = palette[bot_idx][0] * 255 / 63;
+        int bg = palette[bot_idx][1] * 255 / 63;
+        int bb = palette[bot_idx][2] * 255 / 63;
+        printf("\033[38;2;%d;%d;%dm\033[48;2;%d;%d;%dm\xe2\x96\x80",
+               tr, tg, tb, br, bg, bb);
+      }
+      printf("\033[0m\n");
+    }
+    fflush(stdout);
+  }
+
   void video_set_cursor(int row, int col) override {
     printf("\033[%d;%dH", row + 1, col + 1);
     fflush(stdout);
@@ -335,6 +359,38 @@ public:
     return disk_secsize[idx];
   }
 
+  // --- Host file transfer ---
+  bool host_file_open_read(const char *path) override {
+    if (host_read_fp) fclose(host_read_fp);
+    host_read_fp = fopen(path, "rb");
+    return host_read_fp != nullptr;
+  }
+
+  bool host_file_open_write(const char *path) override {
+    if (host_write_fp) fclose(host_write_fp);
+    host_write_fp = fopen(path, "wb");
+    return host_write_fp != nullptr;
+  }
+
+  int host_file_read_byte() override {
+    if (!host_read_fp) return -1;
+    int ch = fgetc(host_read_fp);
+    return (ch == EOF) ? -1 : ch;
+  }
+
+  bool host_file_write_byte(uint8_t byte) override {
+    if (!host_write_fp) return false;
+    return fputc(byte, host_write_fp) != EOF;
+  }
+
+  void host_file_close_read() override {
+    if (host_read_fp) { fclose(host_read_fp); host_read_fp = nullptr; }
+  }
+
+  void host_file_close_write() override {
+    if (host_write_fp) { fclose(host_write_fp); host_write_fp = nullptr; }
+  }
+
   // --- Time ---
   void get_time(int &hour, int &min, int &sec, int &hundredths) override {
     time_t t = time(nullptr);
@@ -360,6 +416,8 @@ private:
   uint64_t disk_off[MAX_DRIVES];   // byte offset within file (for ISO boot images)
   int disk_secsize[MAX_DRIVES];    // sector size (512 for floppy/HDD, 2048 for CD)
   int cur_cols = 80, cur_rows = 25;
+  FILE *host_read_fp = nullptr;
+  FILE *host_write_fp = nullptr;
 
   int drive_index(int drive) {
     if (drive >= 0 && drive < 2) return drive;       // A, B
@@ -496,7 +554,9 @@ static void usage(const char *prog) {
   fprintf(stderr, "\n  Boot control:\n");
   fprintf(stderr, "  -boot DRIVE   Boot from: a, c, or cd (default: auto-detect)\n");
   fprintf(stderr, "\n  Speed control:\n");
-  fprintf(stderr, "  -s MODE       Speed: full, pc (4.77MHz), at (8MHz), turbo (25MHz)\n");
+  fprintf(stderr, "  -s MODE       Speed: full, pc, at, 386sx, 386dx, 486dx2\n");
+  fprintf(stderr, "\n  Hardware:\n");
+  fprintf(stderr, "  -net          Enable NE2000 NIC (IRQ3, base 0x300)\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -509,6 +569,7 @@ int main(int argc, char *argv[]) {
   int iso_boot_drive = -1;
   int force_boot_drive = -1;  // -1 = auto-detect
   dos_machine::SpeedMode speed = dos_machine::SPEED_FULL;
+  bool enable_net = false;
 
   // New disk creation specs (file, size)
   struct new_disk { const char *path; uint64_t size; };
@@ -545,8 +606,12 @@ int main(int argc, char *argv[]) {
       if (strcasecmp(mode, "full") == 0) speed = dos_machine::SPEED_FULL;
       else if (strcasecmp(mode, "pc") == 0) speed = dos_machine::SPEED_PC_4_77;
       else if (strcasecmp(mode, "at") == 0) speed = dos_machine::SPEED_AT_8;
-      else if (strcasecmp(mode, "turbo") == 0) speed = dos_machine::SPEED_TURBO;
+      else if (strcasecmp(mode, "386sx") == 0) speed = dos_machine::SPEED_386SX_16;
+      else if (strcasecmp(mode, "386dx") == 0) speed = dos_machine::SPEED_386DX_33;
+      else if (strcasecmp(mode, "486dx2") == 0) speed = dos_machine::SPEED_486DX2_66;
       else { fprintf(stderr, "Unknown speed: %s\n", mode); return 1; }
+    } else if (strcmp(argv[i], "-net") == 0) {
+      enable_net = true;
     } else if (argv[i][0] != '-') {
       // Auto-detect: ISO files go to CD-ROM, others to floppy A
       if (is_iso_file(argv[i])) {
@@ -580,6 +645,12 @@ int main(int argc, char *argv[]) {
   emu88_mem mem(0x1000000);  // 16MB: 1MB conventional + 15MB extended
   dos_machine machine(&mem, &io);
   machine.set_speed(speed);
+
+  if (enable_net) {
+    dos_machine::Config cfg = machine.get_config();
+    cfg.ne2000_enabled = true;
+    machine.configure(cfg);
+  }
 
   int boot_drive;
   if (force_boot_drive >= 0) {
@@ -639,9 +710,15 @@ int main(int argc, char *argv[]) {
     if (!machine.run_batch(50000)) break;
 
     // Speed throttling
-    uint32_t cps = machine.get_speed() == dos_machine::SPEED_FULL ? 0 :
-      (machine.get_speed() == dos_machine::SPEED_PC_4_77 ? 4770000 :
-       machine.get_speed() == dos_machine::SPEED_AT_8 ? 8000000 : 25000000);
+    uint32_t cps = 0;
+    switch (machine.get_speed()) {
+      case dos_machine::SPEED_FULL:      cps = 0; break;
+      case dos_machine::SPEED_PC_4_77:   cps = 4770000; break;
+      case dos_machine::SPEED_AT_8:      cps = 8000000; break;
+      case dos_machine::SPEED_386SX_16:  cps = 48000000; break;
+      case dos_machine::SPEED_386DX_33:  cps = 100000000; break;
+      case dos_machine::SPEED_486DX2_66: cps = 260000000; break;
+    }
 
     if (cps > 0) {
       unsigned long long elapsed_cycles = machine.cycles - cycle_start;

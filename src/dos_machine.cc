@@ -15,7 +15,9 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
       speed_mode(SPEED_FULL), target_cps(0),
       waiting_for_key(false),
       kbd_poll_count(0),
-      kbd_cmd_pending(0)
+      kbd_poll_start_cycle(0),
+      kbd_cmd_pending(0),
+      nic(nullptr), ne2000_base(0x300), ne2000_irq(3)
 {
   memset(pit_counter, 0, sizeof(pit_counter));
   memset(pit_mode, 0, sizeof(pit_mode));
@@ -26,6 +28,15 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
   memset(pit_latch_value, 0, sizeof(pit_latch_value));
   memset(crtc_regs, 0, sizeof(crtc_regs));
   memset(bios_entry, 0, sizeof(bios_entry));
+  memset(vga_dac, 0, sizeof(vga_dac));
+  dac_write_index = 0;
+  dac_read_index = 0;
+  dac_component = 0;
+  dac_pel_mask = 0xFF;
+}
+
+dos_machine::~dos_machine() {
+  delete nic;
 }
 
 //=============================================================================
@@ -86,6 +97,19 @@ void dos_machine::init_machine() {
     mouse.buttons = 0;
     mouse.visible = false;
   }
+
+  // Initialize NE2000 NIC if enabled
+  if (config.ne2000_enabled) {
+    if (!nic) nic = new ne2000();
+    nic->reset();
+    uint8_t mac[] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    nic->set_mac(mac);
+    ne2000_base = config.ne2000_iobase;
+    ne2000_irq = config.ne2000_irq;
+    nic->on_transmit = [this](const uint8_t *data, int len) {
+      io->net_send(data, len);
+    };
+  }
 }
 
 void dos_machine::init_ivt() {
@@ -126,8 +150,11 @@ void dos_machine::init_bda() {
   // 00=EGA/VGA, 01=40x25 CGA, 10=80x25 CGA, 11=MDA/Hercules
   uint16_t equip = 0x0001;  // floppy present
   bool use_mda = (config.display == DISPLAY_MDA || config.display == DISPLAY_HERCULES);
+  bool use_ega_vga = (config.display == DISPLAY_EGA || config.display == DISPLAY_VGA);
   if (use_mda) {
     equip |= 0x0030;  // bits 4-5 = 11 (MDA)
+  } else if (use_ega_vga) {
+    equip |= 0x0000;  // bits 4-5 = 00 (EGA/VGA)
   } else {
     equip |= 0x0020;  // bits 4-5 = 10 (80x25 CGA)
   }
@@ -203,6 +230,23 @@ void dos_machine::install_bios_stubs() {
     mem->store_mem(dpt + i, dpt_data[i]);
   mem->store_mem16(0x1E * 4,     0xEFC7);
   mem->store_mem16(0x1E * 4 + 2, 0xF000);
+
+  // XMS entry point at F000:EFD8 - called via FAR CALL by XMS clients
+  // Uses BIOS trap opcode (0xF1) with vector 0xFE (reserved for XMS dispatch)
+  // Then RETF to return to caller
+  xms_entry_off = 0xEFD8;
+  uint32_t xms_addr = BIOS_ROM_BASE + xms_entry_off;
+  mem->store_mem(xms_addr,     BIOS_TRAP_OPCODE);  // 0xF1
+  mem->store_mem(xms_addr + 1, 0xFE);              // XMS vector marker
+  mem->store_mem(xms_addr + 2, 0xCB);              // RETF
+
+  // Initialize XMS handles
+  for (int i = 0; i < XMS_MAX_HANDLES; i++) {
+    xms_handles[i].allocated = false;
+    xms_handles[i].base = 0;
+    xms_handles[i].size_kb = 0;
+    xms_handles[i].lock_count = 0;
+  }
 }
 
 //=============================================================================
@@ -253,11 +297,16 @@ bool dos_machine::boot(int drive) {
 
 void dos_machine::set_speed(SpeedMode mode) {
   speed_mode = mode;
+  // CPS values for 386+ speeds are inflated ~3-4x to compensate for
+  // the 8088-based cycle table (8088 instructions cost ~3x more cycles
+  // than 386 instructions, so we need higher CPS to match wall-clock speed).
   switch (mode) {
-    case SPEED_FULL:    target_cps = 0; break;
-    case SPEED_PC_4_77: target_cps = 4770000; break;
-    case SPEED_AT_8:    target_cps = 8000000; break;
-    case SPEED_TURBO:   target_cps = 25000000; break;
+    case SPEED_FULL:       target_cps = 0; break;
+    case SPEED_PC_4_77:    target_cps = 4770000; break;
+    case SPEED_AT_8:       target_cps = 8000000; break;
+    case SPEED_386SX_16:   target_cps = 48000000; break;
+    case SPEED_386DX_33:   target_cps = 100000000; break;
+    case SPEED_486DX2_66:  target_cps = 260000000; break;
   }
 }
 
@@ -267,12 +316,17 @@ bool dos_machine::run_batch(int count) {
 
   for (int i = 0; i < count; i++) {
     if (waiting_for_key) {
-      // Force a video refresh so screen shows latest VRAM before we yield
-      uint32_t base = vram_base();
-      io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
-      int page = bda_r8(bda::ACTIVE_PAGE);
-      uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
-      io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
+      // Program is genuinely idle at a keyboard prompt (passed both
+      // poll count AND emulated time thresholds). Yield to host.
+      if (video_mode == 0x13) {
+        io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+      } else {
+        uint32_t base = vram_base();
+        io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
+        int page = bda_r8(bda::ACTIVE_PAGE);
+        uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
+        io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
+      }
       return true;
     }
 
@@ -302,12 +356,29 @@ bool dos_machine::run_batch(int count) {
     // Video refresh (cycle-based: ~30 Hz)
     if (cycles - refresh_cycle_mark >= CYCLES_PER_REFRESH) {
       refresh_cycle_mark = cycles;
-      uint32_t base = vram_base();
-      io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
+      if (video_mode == 0x13) {
+        // VGA mode 13h: send 320x200 framebuffer + palette
+        io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+      } else {
+        uint32_t base = vram_base();
+        io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
 
-      int page = bda_r8(bda::ACTIVE_PAGE);
-      uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
-      io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
+        int page = bda_r8(bda::ACTIVE_PAGE);
+        uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
+        io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
+      }
+    }
+
+    // NE2000: poll for incoming packets and deliver IRQ (every 1024 insns)
+    if (nic && (i & 0x3FF) == 0) {
+      if (io->net_available()) {
+        uint8_t pkt[1600];
+        int len = io->net_receive(pkt, sizeof(pkt));
+        if (len > 0) nic->receive(pkt, len);
+      }
+      if (nic->irq_active() && get_flag(FLAG_IF) &&
+          !(pic_imr & (1 << ne2000_irq)))
+        request_int(pic_vector_base + ne2000_irq);
     }
 
     check_interrupts();
@@ -321,9 +392,13 @@ bool dos_machine::run_batch(int count) {
 //=============================================================================
 
 void dos_machine::dispatch_bios(uint8_t vector) {
-  // Reset keyboard poll counter on non-idle/non-keyboard interrupts
-  // This prevents triggering waiting_for_key during boot I/O
-  if (vector != 0x08 && vector != 0x1C && vector != 0x1A && vector != 0x16)
+  // Reset keyboard poll counter on interrupts that indicate program activity.
+  // Exclude timer (08/1C), time (1A), keyboard (16), and video (10).
+  // Video is excluded because vask-style polling loops interleave INT 16h AH=01
+  // (check key) with INT 10h AH=02 (cursor blink) - resetting on INT 10h would
+  // prevent the poll counter from ever reaching the threshold.
+  if (vector != 0x08 && vector != 0x1C && vector != 0x1A && vector != 0x16
+      && vector != 0x10)
     kbd_poll_count = 0;
 
   switch (vector) {
@@ -339,7 +414,9 @@ void dos_machine::dispatch_bios(uint8_t vector) {
     case 0x19: bios_int19h(); break;
     case 0x1A: bios_int1ah(); break;
     case 0x1C: break;  // User timer hook - default is no-op
+    case 0x2F: bios_int2fh(); break;
     case 0x33: bios_int33h(); break;
+    case 0xE0: bios_int_e0h(); break;  // Host file services
     default: break;
   }
 }
@@ -353,6 +430,11 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
   if (seg == 0xF000 && off == bios_entry[vector]) {
     // Fast path: trap directly, no push/jump
     dispatch_bios(vector);
+    if (waiting_for_key) {
+      // Rewind IP to re-execute this INT instruction next batch.
+      // IP currently points past the INT xx bytes (2 bytes).
+      ip -= 2;
+    }
     return;
   }
 
@@ -360,7 +442,8 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
   // Our ROM stub will catch it via unimplemented_opcode when the
   // chain reaches our entry point.
   // Reset keyboard poll counter since non-BIOS interrupt = program activity
-  if (vector != 0x08 && vector != 0x1C && vector != 0x1A)
+  // (exclude timer, time, and video - see dispatch_bios comment)
+  if (vector != 0x08 && vector != 0x1C && vector != 0x1A && vector != 0x10)
     kbd_poll_count = 0;
   emu88::do_interrupt(vector);
 }
@@ -371,9 +454,24 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
 
 void dos_machine::unimplemented_opcode(emu88_uint8 opcode) {
   if (opcode == BIOS_TRAP_OPCODE) {
-    // Executing a BIOS ROM trap stub (reached via interrupt chain)
     uint8_t vector = fetch_ip_byte();
+    if (vector == 0xFE) {
+      // XMS entry point - reached via FAR CALL, not INT
+      // Stack has IP, CS (no FLAGS) - RETF follows in ROM
+      xms_dispatch();
+      return;
+    }
+    // Normal BIOS trap stub (reached via interrupt chain)
     dispatch_bios(vector);
+    if (waiting_for_key) {
+      // Don't IRET — rewind IP to the start of this F1 xx stub so the
+      // trap re-fires on the next batch.  The stack (return address from
+      // the INT/CALL that got us here) stays intact; when a key finally
+      // arrives, the handler sets AX and waiting_for_key stays false,
+      // so we fall through to the IRET below and return to the caller.
+      ip -= 2;
+      return;
+    }
     // IRET: pop IP, CS, FLAGS (they were pushed by the INT instruction)
     ip = pop_word();
     sregs[seg_CS] = pop_word();
@@ -482,7 +580,26 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
     case 0x3D8: case 0x3B8: break;  // Mode control
     case 0x3D9: break;               // Color select
 
-    default: break;
+    // --- VGA DAC ---
+    case 0x3C6: dac_pel_mask = value; break;
+    case 0x3C7: dac_read_index = value; dac_component = 0; break;
+    case 0x3C8: dac_write_index = value; dac_component = 0; break;
+    case 0x3C9:
+      vga_dac[dac_write_index][dac_component] = value & 0x3F;
+      dac_component++;
+      if (dac_component >= 3) {
+        dac_component = 0;
+        dac_write_index++;
+      }
+      break;
+
+    default:
+      // NE2000 NIC (32 ports at ne2000_base)
+      if (nic && port >= ne2000_base && port < ne2000_base + 0x20) {
+        nic->iowrite(port - ne2000_base, value);
+        return;
+      }
+      break;
   }
 }
 
@@ -541,12 +658,50 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
       return mtoggle;
     }
 
+    // --- VGA DAC ---
+    case 0x3C6: return dac_pel_mask;
+    case 0x3C7: return 0x03;  // DAC state: read mode
+    case 0x3C9: {
+      uint8_t val = vga_dac[dac_read_index][dac_component] & 0x3F;
+      dac_component++;
+      if (dac_component >= 3) {
+        dac_component = 0;
+        dac_read_index++;
+      }
+      return val;
+    }
+
     // --- CRTC ---
     case 0x3D5: case 0x3B5:
       return crtc_regs[crtc_index];
 
-    default: return 0xFF;
+    default:
+      // NE2000 NIC (32 ports at ne2000_base)
+      if (nic && port >= ne2000_base && port < ne2000_base + 0x20)
+        return nic->ioread(port - ne2000_base);
+      return 0xFF;
   }
+}
+
+//=============================================================================
+// 16-bit Port I/O (for NE2000 data port)
+//=============================================================================
+
+void dos_machine::port_out16(emu88_uint16 port, emu88_uint16 value) {
+  if (nic && port >= ne2000_base && port < ne2000_base + 0x20) {
+    nic->iowrite16(port - ne2000_base, value);
+    return;
+  }
+  // Default: two byte writes
+  port_out(port, value & 0xFF);
+  port_out(port + 1, (value >> 8) & 0xFF);
+}
+
+emu88_uint16 dos_machine::port_in16(emu88_uint16 port) {
+  if (nic && port >= ne2000_base && port < ne2000_base + 0x20)
+    return nic->ioread16(port - ne2000_base);
+  // Default: two byte reads
+  return port_in(port) | ((uint16_t)port_in(port + 1) << 8);
 }
 
 //=============================================================================

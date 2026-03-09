@@ -18,7 +18,7 @@ public:
     else if (drive == 0x80) idx = 2;
     else if (drive == 0x81) idx = 3;
     if (idx < 0) return false;
-    disk_fds[idx] = open(path, O_RDONLY);
+    disk_fds[idx] = open(path, O_RDWR);
     if (disk_fds[idx] < 0) { perror(path); return false; }
     disk_szs[idx] = lseek(disk_fds[idx], 0, SEEK_END);
     lseek(disk_fds[idx], 0, SEEK_SET);
@@ -62,7 +62,13 @@ public:
     ssize_t n = ::read(disk_fds[i], buf, count);
     return n > 0 ? (size_t)n : 0;
   }
-  size_t disk_write(int, uint64_t, const uint8_t*, size_t) override { return 0; }
+  size_t disk_write(int drive, uint64_t offset, const uint8_t* buf, size_t count) override {
+    int i = drive_idx(drive);
+    if (i < 0 || disk_fds[i] < 0) return 0;
+    if (lseek(disk_fds[i], offset, SEEK_SET) < 0) return 0;
+    ssize_t n = ::write(disk_fds[i], buf, count);
+    return n > 0 ? (size_t)n : 0;
+  }
   uint64_t disk_size(int drive) override {
     int i = drive_idx(drive);
     return (i >= 0) ? disk_szs[i] : 0;
@@ -168,6 +174,7 @@ int main(int argc, char *argv[]) {
   emu88_mem mem(0x1000000);
   dos_machine_debug machine(&mem, &io);
   machine.trace_bios = trace;
+  machine.set_display(dos_machine::DISPLAY_VGA);
 
   if (!machine.boot(boot_drive)) return 1;
 

@@ -615,6 +615,7 @@ emu88_uint32 emu88::do_alu32(emu88_uint8 op, emu88_uint32 a, emu88_uint32 b) {
 //=============================================================================
 
 emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count) {
+  count &= 31;  // 286+ masks shift count to 5 bits
   if (count == 0) return val;
   emu88_uint8 result = val;
   emu88_uint8 cf;
@@ -683,6 +684,7 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
 }
 
 emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 count) {
+  count &= 31;  // 286+ masks shift count to 5 bits
   if (count == 0) return val;
   emu88_uint16 result = val;
   emu88_uint8 cf;

@@ -103,6 +103,18 @@ public:
         }
     }
 
+    void video_refresh_gfx(const uint8_t *framebuf, int width, int height,
+                            const uint8_t palette[][3]) override {
+        if (delegate && [delegate respondsToSelector:@selector(emulatorVideoRefreshGfx:width:height:palette:)]) {
+            NSData *fb = [NSData dataWithBytes:framebuf length:width * height];
+            NSData *pal = [NSData dataWithBytes:palette length:256 * 3];
+            int w = width, h = height;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [delegate emulatorVideoRefreshGfx:fb width:w height:h palette:pal];
+            });
+        }
+    }
+
     void video_set_cursor(int row, int col) override {
         if (delegate && [delegate respondsToSelector:@selector(emulatorVideoSetCursorRow:col:)]) {
             int r = row, c = col;
@@ -362,10 +374,12 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
 
         uint32_t cps = 0;
         switch (_machine->get_speed()) {
-            case dos_machine::SPEED_FULL:    cps = 0; break;
-            case dos_machine::SPEED_PC_4_77: cps = 4770000; break;
-            case dos_machine::SPEED_AT_8:    cps = 8000000; break;
-            case dos_machine::SPEED_TURBO:   cps = 25000000; break;
+            case dos_machine::SPEED_FULL:      cps = 0; break;
+            case dos_machine::SPEED_PC_4_77:   cps = 4770000; break;
+            case dos_machine::SPEED_AT_8:      cps = 8000000; break;
+            case dos_machine::SPEED_386SX_16:  cps = 48000000; break;
+            case dos_machine::SPEED_386DX_33:  cps = 100000000; break;
+            case dos_machine::SPEED_486DX2_66: cps = 260000000; break;
         }
 
         if (cps > 0) {
@@ -385,7 +399,9 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
                     [self->_io->delegate emulatorDidRequestInput];
                 });
             }
-            [NSThread sleepForTimeInterval:0.001];
+            // Sleep 16ms (~60Hz) when idle at a prompt to avoid burning CPU
+            // with continuous video refresh dispatches to the main thread
+            [NSThread sleepForTimeInterval:0.016];
         } else if (cps == 0) {
             [NSThread sleepForTimeInterval:0.0001];
         }

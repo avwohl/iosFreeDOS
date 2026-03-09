@@ -9,10 +9,10 @@ struct MachineConfig: Codable, Identifiable, Equatable {
     var name: String = "Default"
 
     // CPU
-    var speedMode: Int = 1  // 0=full, 1=PC 4.77, 2=AT 8, 3=Turbo
+    var speedMode: Int = 1  // 0=full, 1=PC 4.77, 2=AT 8, 3=386SX-16, 4=386DX-33, 5=486DX2-66
 
     // Display
-    var displayAdapter: Int = 0  // 0=CGA, 1=MDA, 2=Hercules, 3=CGA+MDA
+    var displayAdapter: Int = 0  // 0=CGA, 1=MDA, 2=Hercules, 3=CGA+MDA, 4=EGA, 5=VGA
 
     // Peripherals
     var mouseEnabled: Bool = true
@@ -33,7 +33,9 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         case 0: return "Full Speed"
         case 1: return "IBM PC (4.77 MHz)"
         case 2: return "IBM AT (8 MHz)"
-        case 3: return "Turbo (25 MHz)"
+        case 3: return "386SX (16 MHz)"
+        case 4: return "386DX (33 MHz)"
+        case 5: return "486DX2 (66 MHz)"
         default: return "Unknown"
         }
     }
@@ -44,6 +46,8 @@ struct MachineConfig: Codable, Identifiable, Equatable {
         case 1: return "MDA"
         case 2: return "Hercules"
         case 3: return "CGA + MDA"
+        case 4: return "EGA"
+        case 5: return "VGA"
         default: return "Unknown"
         }
     }

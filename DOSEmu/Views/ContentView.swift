@@ -71,19 +71,26 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.vertical, 6)
 
-            TerminalWithToolbar(
-                cells: $viewModel.terminalCells,
-                cursorRow: $viewModel.cursorRow,
-                cursorCol: $viewModel.cursorCol,
-                shouldFocus: $viewModel.terminalShouldFocus,
-                onKeyInput: { viewModel.sendKey($0) },
-                onSetControlify: { viewModel.setControlify($0) },
-                onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
-                isControlifyActive: viewModel.isControlifyActive,
-                rows: viewModel.terminalRows,
-                cols: viewModel.terminalCols,
-                fontSize: fontSize
-            )
+            if let gfxImg = viewModel.gfxImage {
+                Image(uiImage: gfxImg)
+                    .interpolation(.none)
+                    .resizable()
+                    .aspectRatio(CGSize(width: 4, height: 3), contentMode: .fit)
+            } else {
+                TerminalWithToolbar(
+                    cells: $viewModel.terminalCells,
+                    cursorRow: $viewModel.cursorRow,
+                    cursorCol: $viewModel.cursorCol,
+                    shouldFocus: $viewModel.terminalShouldFocus,
+                    onKeyInput: { viewModel.sendKey($0) },
+                    onSetControlify: { viewModel.setControlify($0) },
+                    onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
+                    isControlifyActive: viewModel.isControlifyActive,
+                    rows: viewModel.terminalRows,
+                    cols: viewModel.terminalCols,
+                    fontSize: fontSize
+                )
+            }
         }
     }
 
@@ -101,7 +108,7 @@ struct ContentView: View {
             preferencesSection
             aboutSection
         }
-        .navigationTitle("DOSEmu")
+        .navigationTitle("FreeDOS")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Start") { viewModel.start() }
@@ -193,6 +200,8 @@ struct ContentView: View {
                 Text("MDA").tag(1)
                 Text("Hercules").tag(2)
                 Text("CGA + MDA").tag(3)
+                Text("EGA").tag(4)
+                Text("VGA").tag(5)
             }
         }
     }
@@ -252,7 +261,9 @@ struct ContentView: View {
                 Text("Full Speed").tag(0)
                 Text("IBM PC (4.77 MHz)").tag(1)
                 Text("IBM AT (8 MHz)").tag(2)
-                Text("Turbo (25 MHz)").tag(3)
+                Text("386SX (16 MHz)").tag(3)
+                Text("386DX (33 MHz)").tag(4)
+                Text("486DX2 (66 MHz)").tag(5)
             }
         }
     }
@@ -432,7 +443,14 @@ struct ContentView: View {
 
     var bootSection: some View {
         Section("Boot") {
-            Picker("Boot Drive", selection: $viewModel.bootDrive) {
+            Picker("Boot Drive", selection: Binding(
+                get: { viewModel.config.bootDrive },
+                set: { val in
+                    var cfg = viewModel.config
+                    cfg.bootDrive = val
+                    viewModel.configManager.updateConfig(cfg)
+                }
+            )) {
                 Text("Floppy A:").tag(0)
                 Text("Hard Disk C:").tag(0x80)
                 Text("CD-ROM").tag(0xE0)
@@ -466,10 +484,19 @@ struct ContentView: View {
 
     // MARK: - About Section
 
+    @State private var showingHelp = false
+
     var aboutSection: some View {
         Section {
+            Button("Help") {
+                showingHelp = true
+            }
+            .sheet(isPresented: $showingHelp) {
+                HelpView()
+            }
+
             NavigationLink(destination: AboutView()) {
-                Text("About DOSEmu")
+                Text("About FreeDOS")
             }
         }
     }
@@ -496,20 +523,30 @@ struct AboutView: View {
                         .cornerRadius(18)
                         .accessibilityHidden(true)
 
-                    Text("DOSEmu")
+                    Text("FreeDOS")
                         .font(.title.bold())
 
                     Text("Version \(appVersion) (Build \(buildNumber))")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
 
-                    Text("An 8088 IBM PC emulator for iOS and Mac.")
+                    Text("An IBM PC emulator running FreeDOS on iOS and Mac.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+
+                    Text("\u{00A9} 2025 Aaron Wohl")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
+            }
+
+            Section("License") {
+                Text("This emulator is licensed under the GNU General Public License v3.0. FreeDOS is licensed under the GNU General Public License v2 or later. Source code is available on GitHub.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section("Links") {
@@ -539,10 +576,23 @@ struct AboutView: View {
                             .foregroundColor(.secondary)
                     }
                 }
+
+                Link(destination: URL(string: "https://github.com/FDOS/kernel")!) {
+                    HStack {
+                        Label("FreeDOS Kernel Source", systemImage: "doc.text")
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                    }
+                }
             }
 
             Section("Acknowledgments") {
-                Text("FreeDOS is a free, open-source DOS-compatible operating system that can be used with this emulator. Visit freedos.org to download disk images.")
+                Text("FreeDOS is a free, open-source DOS-compatible operating system licensed under the GNU GPL v2+. The FreeDOS kernel is maintained by the FreeDOS Project at freedos.org. Source code is available at github.com/FDOS/kernel.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("FreeDOS \"Blinky the Fish\" mascot by Bas Snabilie, licensed under CC-BY 2.5.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

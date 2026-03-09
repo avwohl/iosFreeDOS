@@ -1,0 +1,81 @@
+App Store Listing for FreeDOS
+=============================
+
+PROMOTIONAL TEXT (max 170 characters)
+-------------------------------------
+Run classic DOS software on your iPhone, iPad, or Mac. Full IBM PC emulation with FreeDOS, networking, and file transfer.
+
+
+DESCRIPTION (max 4000 characters)
+---------------------------------
+FreeDOS brings the classic DOS operating system to your iPhone, iPad, and Mac with a full IBM PC emulator.
+
+FEATURES
+
+* Full PC Emulation - 8088/386 CPU emulator runs authentic DOS software (real mode — no DPMI/DOS extenders)
+* FreeDOS Included - Boots the free, open-source FreeDOS operating system
+* File Transfer - Move files between DOS and your device with built-in R.COM and W.COM utilities
+* NE2000 Networking - Emulated Ethernet adapter for TCP/IP with mTCP
+* Multiple Display Adapters - CGA, MDA, Hercules, and dual CGA+MDA
+* Mouse Support - Touch-to-mouse mapping (tap = click, long press = right click, drag = move)
+* Disk Support - Floppy, hard disk, and CD-ROM ISO images
+* Disk Catalog - Download ready-made disk images with one tap
+* Configuration Profiles - Save different machine setups
+* Speed Control - IBM PC 4.77 MHz, IBM AT 8 MHz, Turbo 25 MHz, or full speed
+* Works Offline - All data stored locally on your device
+
+GETTING FILES IN AND OUT
+
+Use the built-in R.COM and W.COM utilities to transfer files between DOS and your device:
+* R hostfile.txt DOSFILE.TXT - copies a file from your device into DOS
+* W DOSFILE.TXT hostfile.txt - copies a DOS file to your device
+On iOS, files are in the Files app under FreeDOS. On Mac, files are in the app's Documents container.
+
+NETWORKING
+
+Load an NE2000 packet driver and use mTCP for FTP, Telnet, IRC, HTTP downloads, and more — all from inside DOS.
+
+COMPATIBILITY NOTE
+
+The 386 CPU is real mode only. Programs requiring protected mode, DPMI, or DOS extenders (DOOM, Quake, Duke Nukem 3D, etc.) will not run. The emulator supports a wide range of classic DOS games and software from the late 1980s through mid-1990s.
+
+GETTING STARTED
+
+1. Open the app and download a FreeDOS disk from the Disk Catalog
+2. Tap "Use as A:" to mount the floppy
+3. Tap Start Emulator
+4. You're at the DOS prompt — run DIR, EDIT, or any DOS program
+
+OPEN SOURCE
+
+This emulator is open source (GPLv3). FreeDOS is a free, open-source DOS-compatible operating system (GPLv2+). Full source code is available on GitHub.
+
+
+KEYWORDS (max 100 characters)
+-----------------------------
+dos,freedos,emulator,retro,ibm,pc,8088,386,vintage,terminal,msdos,retrocomputing
+
+
+SUBTITLE (max 30 characters)
+----------------------------
+Classic DOS Emulator
+
+
+CATEGORY
+--------
+Utilities
+
+
+SUPPORT URL
+-----------
+https://github.com/avwohl/dosemu
+
+
+PRIVACY POLICY URL
+------------------
+https://github.com/avwohl/dosemu/blob/main/PRIVACY.md
+
+
+COPYRIGHT
+---------
+2025 Aaron Wohl

@@ -11,21 +11,66 @@ uint32_t dos_machine::vram_base() const {
   return (video_mode == 7) ? MDA_VRAM_BASE : CGA_VRAM_BASE;
 }
 
+// Default VGA palette: 16 standard colors + 16 dark + 216 color cube + 24 grays
+static void init_default_vga_palette(uint8_t dac[][3]) {
+  // Standard 16 CGA colors (indices 0-15)
+  static const uint8_t cga16[16][3] = {
+    { 0, 0, 0}, { 0, 0,42}, { 0,42, 0}, { 0,42,42},
+    {42, 0, 0}, {42, 0,42}, {42,21, 0}, {42,42,42},
+    {21,21,21}, {21,21,63}, {21,63,21}, {21,63,63},
+    {63,21,21}, {63,21,63}, {63,63,21}, {63,63,63}
+  };
+  for (int i = 0; i < 16; i++) {
+    dac[i][0] = cga16[i][0]; dac[i][1] = cga16[i][1]; dac[i][2] = cga16[i][2];
+  }
+  // Indices 16-31: darker versions of 0-15
+  for (int i = 0; i < 16; i++) {
+    dac[16+i][0] = cga16[i][0] / 2;
+    dac[16+i][1] = cga16[i][1] / 2;
+    dac[16+i][2] = cga16[i][2] / 2;
+  }
+  // Indices 32-247: 6x6x6 color cube
+  int idx = 32;
+  for (int r = 0; r < 6; r++)
+    for (int g = 0; g < 6; g++)
+      for (int b = 0; b < 6; b++) {
+        if (idx < 248) {
+          dac[idx][0] = r * 12 + 3;
+          dac[idx][1] = g * 12 + 3;
+          dac[idx][2] = b * 12 + 3;
+          idx++;
+        }
+      }
+  // Indices 248-255: grayscale ramp
+  for (int i = 0; i < 8; i++) {
+    uint8_t v = (uint8_t)(i * 9);
+    dac[248+i][0] = v; dac[248+i][1] = v; dac[248+i][2] = v;
+  }
+}
+
 void dos_machine::video_set_mode(int mode) {
   video_mode = mode;
   switch (mode) {
     case 0: case 1: screen_cols = 40; screen_rows = 25; break;
     case 2: case 3: screen_cols = 80; screen_rows = 25; break;
     case 7:         screen_cols = 80; screen_rows = 25; break;
+    case 0x13:      screen_cols = 40; screen_rows = 25; break;  // 320x200x256 (text cols/rows for BDA)
     default:        screen_cols = 80; screen_rows = 25; break;
   }
 
-  // Clear VRAM
-  uint32_t base = vram_base();
-  int cells = screen_cols * screen_rows;
-  for (int i = 0; i < cells; i++) {
-    mem->store_mem(base + i * 2,     0x20);  // space
-    mem->store_mem(base + i * 2 + 1, 0x07);  // light gray on black
+  if (mode == 0x13) {
+    // VGA mode 13h: 320x200x256 linear framebuffer at A000:0000
+    for (uint32_t i = 0; i < 64000; i++)
+      mem->store_mem(VGA_VRAM_BASE + i, 0);
+    init_default_vga_palette(vga_dac);
+  } else {
+    // Text mode: clear VRAM
+    uint32_t base = vram_base();
+    int cells = screen_cols * screen_rows;
+    for (int i = 0; i < cells; i++) {
+      mem->store_mem(base + i * 2,     0x20);  // space
+      mem->store_mem(base + i * 2 + 1, 0x07);  // light gray on black
+    }
   }
 
   // Update BDA
@@ -33,7 +78,7 @@ void dos_machine::video_set_mode(int mode) {
   bda_w16(bda::SCREEN_COLS, screen_cols);
   bda_w8(bda::SCREEN_ROWS, screen_rows - 1);
   bda_w16(bda::CRTC_BASE, (mode == 7) ? 0x3B4 : 0x3D4);
-  bda_w16(bda::VIDEO_PAGE_SZ, cells * 2);
+  bda_w16(bda::VIDEO_PAGE_SZ, (mode == 0x13) ? 0xFA00 : screen_cols * screen_rows * 2);
   bda_w16(bda::VIDEO_PAGE_OFF, 0);
   bda_w8(bda::ACTIVE_PAGE, 0);
 
@@ -329,6 +374,36 @@ void dos_machine::bios_int10h() {
       video_write_char(al, 0xFF, count);  // 0xFF = keep existing attr
       break;
     }
+    case 0x0B: {  // Set color palette (CGA)
+      break;
+    }
+    case 0x0C: {  // Write pixel
+      if (video_mode == 0x13) {
+        int x = regs[reg_CX];
+        int y = regs[reg_DX];
+        if (x < 320 && y < 200) {
+          uint8_t color = al;
+          if (get_reg8(reg_BH) != 0) {
+            // Page is ignored for mode 13h but XOR mode uses bit 7
+          }
+          mem->store_mem(VGA_VRAM_BASE + y * 320 + x, color);
+        }
+      }
+      break;
+    }
+    case 0x0D: {  // Read pixel
+      if (video_mode == 0x13) {
+        int x = regs[reg_CX];
+        int y = regs[reg_DX];
+        if (x < 320 && y < 200)
+          set_reg8(reg_AL, mem->fetch_mem(VGA_VRAM_BASE + y * 320 + x));
+        else
+          set_reg8(reg_AL, 0);
+      } else {
+        set_reg8(reg_AL, 0);
+      }
+      break;
+    }
     case 0x0E: {  // TTY output
       video_tty(al);
       break;
@@ -339,10 +414,47 @@ void dos_machine::bios_int10h() {
       set_reg8(reg_BH, bda_r8(bda::ACTIVE_PAGE));
       break;
     }
-    case 0x10: {  // Color palette - stub
-      break;
-    }
-    case 0x0B: {  // Set color palette - stub
+    case 0x10: {  // VGA DAC palette functions
+      uint8_t al10 = al;
+      switch (al10) {
+        case 0x10: {  // Set individual DAC register
+          uint8_t reg = get_reg8(reg_BL);
+          vga_dac[reg][0] = get_reg8(reg_DH) & 0x3F;
+          vga_dac[reg][1] = get_reg8(reg_CH) & 0x3F;
+          vga_dac[reg][2] = get_reg8(reg_CL) & 0x3F;
+          break;
+        }
+        case 0x12: {  // Set block of DAC registers
+          uint16_t start = regs[reg_BX];
+          uint16_t count = regs[reg_CX];
+          uint32_t tbl = EMU88_MK20(sregs[seg_ES], regs[reg_DX]);
+          for (uint16_t i = 0; i < count && start + i < 256; i++) {
+            vga_dac[start + i][0] = mem->fetch_mem(tbl + i * 3) & 0x3F;
+            vga_dac[start + i][1] = mem->fetch_mem(tbl + i * 3 + 1) & 0x3F;
+            vga_dac[start + i][2] = mem->fetch_mem(tbl + i * 3 + 2) & 0x3F;
+          }
+          break;
+        }
+        case 0x15: {  // Read individual DAC register
+          uint8_t reg = get_reg8(reg_BL);
+          set_reg8(reg_DH, vga_dac[reg][0]);
+          set_reg8(reg_CH, vga_dac[reg][1]);
+          set_reg8(reg_CL, vga_dac[reg][2]);
+          break;
+        }
+        case 0x17: {  // Read block of DAC registers
+          uint16_t start = regs[reg_BX];
+          uint16_t count = regs[reg_CX];
+          uint32_t tbl = EMU88_MK20(sregs[seg_ES], regs[reg_DX]);
+          for (uint16_t i = 0; i < count && start + i < 256; i++) {
+            mem->store_mem(tbl + i * 3,     vga_dac[start + i][0]);
+            mem->store_mem(tbl + i * 3 + 1, vga_dac[start + i][1]);
+            mem->store_mem(tbl + i * 3 + 2, vga_dac[start + i][2]);
+          }
+          break;
+        }
+        default: break;
+      }
       break;
     }
     case 0x11: {  // Character generator - stub
@@ -423,7 +535,7 @@ void dos_machine::bios_int10h() {
     case 0x1A: {  // Get/set display combination code
       if (al == 0x00) {
         set_reg8(reg_AL, 0x1A);  // Function supported
-        // Report adapter type based on config
+        // Report adapter type based on config (DCC codes)
         switch (config.display) {
           case DISPLAY_MDA:
             set_reg8(reg_BL, 0x01);  // MDA monochrome
@@ -433,10 +545,19 @@ void dos_machine::bios_int10h() {
             set_reg8(reg_BL, 0x01);  // Hercules reports as MDA
             set_reg8(reg_BH, 0x00);
             break;
+          case DISPLAY_CGA:
+            set_reg8(reg_BL, 0x02);  // CGA color
+            set_reg8(reg_BH, 0x00);
+            break;
+          case DISPLAY_EGA:
+            set_reg8(reg_BL, 0x04);  // EGA color
+            set_reg8(reg_BH, 0x00);
+            break;
           case DISPLAY_CGA_MDA:
             set_reg8(reg_BL, 0x08);  // Primary: VGA color
             set_reg8(reg_BH, 0x01);  // Secondary: MDA
             break;
+          case DISPLAY_VGA:
           default:
             set_reg8(reg_BL, 0x08);  // VGA color
             set_reg8(reg_BH, 0x00);
@@ -919,8 +1040,8 @@ void dos_machine::bios_int16h() {
       uint16_t tail = bda_r16(bda::KBD_BUF_TAIL);
 
       if (head == tail) {
-        // No key - rewind IP to re-execute this INT instruction
-        ip -= 2;  // Back past the CD xx bytes
+        // No key available — signal callers (do_interrupt / unimplemented_opcode)
+        // to rewind IP and retry on the next batch.
         waiting_for_key = true;
         return;
       }
@@ -946,10 +1067,17 @@ void dos_machine::bios_int16h() {
 
       if (head == tail) {
         set_flag(FLAG_ZF);  // No key
-        // Track consecutive no-key polls; high threshold avoids triggering
-        // during DOS Ctrl-C checks but catches tight polling loops at prompts
+        // Track consecutive no-key polls. Use both a count threshold AND
+        // a minimum emulated time to avoid false triggers during:
+        // - DOS Ctrl-C checks (~5-20 polls per batch, brief)
+        // - FreeDOS boot "Press F8" prompt (~2 sec timer-based timeout)
+        // Only yield when the program has been polling continuously for
+        // both enough polls AND enough emulated time (~165ms = 3 ticks).
+        if (kbd_poll_count == 0)
+          kbd_poll_start_cycle = cycles;
         kbd_poll_count++;
-        if (kbd_poll_count >= KBD_POLL_THRESHOLD)
+        if (kbd_poll_count >= KBD_POLL_THRESHOLD &&
+            (cycles - kbd_poll_start_cycle) >= KBD_POLL_MIN_CYCLES)
           waiting_for_key = true;
         return;
       }
@@ -1214,6 +1342,342 @@ void dos_machine::bios_int33h() {
       regs[reg_DX] = 0x00;    // IRQ 0 (not real)
       break;
     default:
+      break;
+  }
+}
+
+//=============================================================================
+// INT E0h - Host File Services (for R.COM / W.COM)
+//=============================================================================
+
+void dos_machine::bios_int_e0h() {
+  uint8_t ah = get_reg8(reg_AH);
+
+  switch (ah) {
+    case 0x01: {  // Open host file for reading
+      // DS:DX -> ASCIIZ path string
+      uint32_t addr = EMU88_MK20(sregs[seg_DS], regs[reg_DX]);
+      char path[256];
+      int i;
+      for (i = 0; i < 255; i++) {
+        uint8_t ch = mem->fetch_mem(addr + i);
+        if (ch == 0) break;
+        path[i] = (char)ch;
+      }
+      path[i] = 0;
+
+      if (io->host_file_open_read(path)) {
+        clear_flag(FLAG_CF);
+      } else {
+        set_flag(FLAG_CF);
+      }
+      break;
+    }
+    case 0x02: {  // Open host file for writing
+      uint32_t addr = EMU88_MK20(sregs[seg_DS], regs[reg_DX]);
+      char path[256];
+      int i;
+      for (i = 0; i < 255; i++) {
+        uint8_t ch = mem->fetch_mem(addr + i);
+        if (ch == 0) break;
+        path[i] = (char)ch;
+      }
+      path[i] = 0;
+
+      if (io->host_file_open_write(path)) {
+        clear_flag(FLAG_CF);
+      } else {
+        set_flag(FLAG_CF);
+      }
+      break;
+    }
+    case 0x03: {  // Read one byte from host file
+      int ch = io->host_file_read_byte();
+      if (ch < 0) {
+        set_flag(FLAG_CF);   // EOF or error
+      } else {
+        set_reg8(reg_AL, (uint8_t)ch);
+        clear_flag(FLAG_CF);
+      }
+      break;
+    }
+    case 0x04: {  // Write one byte to host file
+      uint8_t byte = get_reg8(reg_DL);
+      if (io->host_file_write_byte(byte)) {
+        clear_flag(FLAG_CF);
+      } else {
+        set_flag(FLAG_CF);
+      }
+      break;
+    }
+    case 0x05: {  // Close host file
+      uint8_t side = get_reg8(reg_AL);
+      if (side == 0) {
+        io->host_file_close_read();
+      } else {
+        io->host_file_close_write();
+      }
+      clear_flag(FLAG_CF);
+      break;
+    }
+    default:
+      set_flag(FLAG_CF);
+      break;
+  }
+}
+
+//=============================================================================
+// INT 2Fh - Multiplex Interrupt (XMS detection)
+//=============================================================================
+
+void dos_machine::bios_int2fh() {
+  uint16_t ax = regs[reg_AX];
+
+  if (ax == 0x4300) {
+    // XMS installed check - return AL=80h if extended memory available
+    uint32_t ext_kb = 0;
+    if (mem->get_mem_size() > 0x100000)
+      ext_kb = (mem->get_mem_size() - 0x100000) / 1024;
+    if (ext_kb > 0) {
+      set_reg8(reg_AL, 0x80);  // XMS driver installed
+    }
+    return;
+  }
+
+  if (ax == 0x4310) {
+    // Get XMS driver entry point -> ES:BX
+    sregs[seg_ES] = 0xF000;
+    regs[reg_BX] = xms_entry_off;
+    return;
+  }
+}
+
+//=============================================================================
+// XMS dispatch - called via FAR CALL to F000:EFD8
+//=============================================================================
+
+void dos_machine::xms_dispatch() {
+  uint8_t func = get_reg8(reg_AH);
+
+  switch (func) {
+    case 0x00: {  // Get XMS version
+      regs[reg_AX] = 0x0300;  // XMS version 3.00
+      regs[reg_BX] = 0x0100;  // Driver version 1.00
+      regs[reg_DX] = 1;       // HMA exists
+      break;
+    }
+    case 0x01: {  // Request HMA
+      mem->set_a20(true);
+      regs[reg_AX] = 1;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x02: {  // Release HMA
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x03: {  // Global enable A20
+      mem->set_a20(true);
+      regs[reg_AX] = 1;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x04: {  // Global disable A20
+      mem->set_a20(false);
+      regs[reg_AX] = 1;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x05: {  // Local enable A20
+      mem->set_a20(true);
+      regs[reg_AX] = 1;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x06: {  // Local disable A20
+      mem->set_a20(false);
+      regs[reg_AX] = 1;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x07: {  // Query A20 state
+      regs[reg_AX] = mem->get_a20() ? 1 : 0;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x08: {  // Query free extended memory
+      uint32_t total_kb = 0;
+      if (mem->get_mem_size() > 0x100000)
+        total_kb = (mem->get_mem_size() - 0x100000) / 1024;
+      // Subtract HMA (64KB)
+      if (total_kb > 64) total_kb -= 64;
+      else total_kb = 0;
+      // Subtract allocated blocks
+      uint32_t alloc_kb = 0;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++)
+        if (xms_handles[i].allocated)
+          alloc_kb += xms_handles[i].size_kb;
+      uint32_t free_kb = total_kb > alloc_kb ? total_kb - alloc_kb : 0;
+      regs[reg_AX] = free_kb > 0xFFFF ? 0xFFFF : (uint16_t)free_kb;
+      regs[reg_DX] = free_kb > 0xFFFF ? 0xFFFF : (uint16_t)free_kb;
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x09: {  // Allocate extended memory block
+      uint16_t req_kb = regs[reg_DX];
+      int handle = -1;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++) {
+        if (!xms_handles[i].allocated) { handle = i; break; }
+      }
+      if (handle < 0) {
+        regs[reg_AX] = 0;
+        regs[reg_BX] = 0xA1;  // All handles in use
+        break;
+      }
+      // Sequential allocation above HMA (0x110000+)
+      uint32_t alloc_base = 0x110000;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++) {
+        if (xms_handles[i].allocated) {
+          uint32_t end = xms_handles[i].base + xms_handles[i].size_kb * 1024;
+          if (end > alloc_base) alloc_base = end;
+        }
+      }
+      uint32_t needed = (uint32_t)req_kb * 1024;
+      if (alloc_base + needed > mem->get_mem_size()) {
+        regs[reg_AX] = 0;
+        regs[reg_BX] = 0xA0;  // Not enough memory
+        break;
+      }
+      xms_handles[handle].allocated = true;
+      xms_handles[handle].base = alloc_base;
+      xms_handles[handle].size_kb = req_kb;
+      xms_handles[handle].lock_count = 0;
+      regs[reg_AX] = 1;
+      regs[reg_DX] = handle + 1;  // Handle (1-based)
+      break;
+    }
+    case 0x0A: {  // Free extended memory block
+      int handle = regs[reg_DX] - 1;
+      if (handle < 0 || handle >= XMS_MAX_HANDLES || !xms_handles[handle].allocated) {
+        regs[reg_AX] = 0;
+        regs[reg_BX] = 0xA2;  // Invalid handle
+        break;
+      }
+      xms_handles[handle].allocated = false;
+      xms_handles[handle].base = 0;
+      xms_handles[handle].size_kb = 0;
+      xms_handles[handle].lock_count = 0;
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x0B: {  // Move extended memory block
+      // DS:SI -> move structure
+      uint32_t struct_addr = EMU88_MK20(sregs[seg_DS], regs[reg_SI]);
+      uint32_t length = mem->fetch_mem16(struct_addr) |
+                        ((uint32_t)mem->fetch_mem16(struct_addr + 2) << 16);
+      uint16_t src_handle = mem->fetch_mem16(struct_addr + 4);
+      uint32_t src_off = mem->fetch_mem16(struct_addr + 6) |
+                         ((uint32_t)mem->fetch_mem16(struct_addr + 8) << 16);
+      uint16_t dst_handle = mem->fetch_mem16(struct_addr + 10);
+      uint32_t dst_off = mem->fetch_mem16(struct_addr + 12) |
+                         ((uint32_t)mem->fetch_mem16(struct_addr + 14) << 16);
+
+      // Resolve source address
+      uint32_t src_addr;
+      if (src_handle == 0) {
+        src_addr = ((src_off >> 16) << 4) + (src_off & 0xFFFF);
+      } else {
+        int h = src_handle - 1;
+        if (h < 0 || h >= XMS_MAX_HANDLES || !xms_handles[h].allocated) {
+          regs[reg_AX] = 0; regs[reg_BX] = 0xA3; break;
+        }
+        src_addr = xms_handles[h].base + src_off;
+      }
+
+      // Resolve dest address
+      uint32_t dst_addr;
+      if (dst_handle == 0) {
+        dst_addr = ((dst_off >> 16) << 4) + (dst_off & 0xFFFF);
+      } else {
+        int h = dst_handle - 1;
+        if (h < 0 || h >= XMS_MAX_HANDLES || !xms_handles[h].allocated) {
+          regs[reg_AX] = 0; regs[reg_BX] = 0xA3; break;
+        }
+        dst_addr = xms_handles[h].base + dst_off;
+      }
+
+      bool old_a20 = mem->get_a20();
+      mem->set_a20(true);
+      for (uint32_t i = 0; i < length; i++)
+        mem->store_mem(dst_addr + i, mem->fetch_mem(src_addr + i));
+      mem->set_a20(old_a20);
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x0C: {  // Lock extended memory block
+      int handle = regs[reg_DX] - 1;
+      if (handle < 0 || handle >= XMS_MAX_HANDLES || !xms_handles[handle].allocated) {
+        regs[reg_AX] = 0; regs[reg_BX] = 0xA2; break;
+      }
+      xms_handles[handle].lock_count++;
+      regs[reg_DX] = (uint16_t)(xms_handles[handle].base >> 16);
+      regs[reg_BX] = (uint16_t)(xms_handles[handle].base & 0xFFFF);
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x0D: {  // Unlock extended memory block
+      int handle = regs[reg_DX] - 1;
+      if (handle < 0 || handle >= XMS_MAX_HANDLES || !xms_handles[handle].allocated) {
+        regs[reg_AX] = 0; regs[reg_BX] = 0xA2; break;
+      }
+      if (xms_handles[handle].lock_count > 0)
+        xms_handles[handle].lock_count--;
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x0E: {  // Get handle information
+      int handle = regs[reg_DX] - 1;
+      if (handle < 0 || handle >= XMS_MAX_HANDLES || !xms_handles[handle].allocated) {
+        regs[reg_AX] = 0; regs[reg_BX] = 0xA2; break;
+      }
+      set_reg8(reg_BH, xms_handles[handle].lock_count);
+      int free_h = 0;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++)
+        if (!xms_handles[i].allocated) free_h++;
+      set_reg8(reg_BL, free_h > 255 ? 255 : free_h);
+      regs[reg_DX] = xms_handles[handle].size_kb > 0xFFFF ?
+                     0xFFFF : (uint16_t)xms_handles[handle].size_kb;
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x0F: {  // Reallocate extended memory block
+      int handle = regs[reg_DX] - 1;
+      uint16_t new_kb = regs[reg_BX];
+      if (handle < 0 || handle >= XMS_MAX_HANDLES || !xms_handles[handle].allocated) {
+        regs[reg_AX] = 0; regs[reg_BX] = 0xA2; break;
+      }
+      uint32_t new_end = xms_handles[handle].base + (uint32_t)new_kb * 1024;
+      if (new_end > mem->get_mem_size()) {
+        regs[reg_AX] = 0; regs[reg_BX] = 0xA0; break;
+      }
+      xms_handles[handle].size_kb = new_kb;
+      regs[reg_AX] = 1;
+      break;
+    }
+    case 0x10: {  // Request upper memory block
+      regs[reg_AX] = 0;
+      regs[reg_BX] = 0xB1;  // No UMBs available
+      regs[reg_DX] = 0;
+      break;
+    }
+    case 0x11: {  // Release upper memory block
+      regs[reg_AX] = 0;
+      regs[reg_BX] = 0xB2;
+      break;
+    }
+    default:
+      regs[reg_AX] = 0;
+      regs[reg_BX] = 0x80;  // Function not implemented
       break;
   }
 }

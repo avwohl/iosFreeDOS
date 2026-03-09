@@ -1,0 +1,72 @@
+name: Build Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        type: string
+      create_release:
+        description: 'Create GitHub release'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NASM
+        run: brew install nasm
+
+      - name: Install mtools
+        run: brew install mtools
+
+      - name: Build DOS utilities
+        run: |
+          nasm -f bin -o dos/r.com dos/r.asm
+          nasm -f bin -o dos/w.com dos/w.asm
+
+      - name: Build hard disk image
+        run: |
+          if [ -x scripts/build_hdd.sh ]; then
+            scripts/build_hdd.sh
+          fi
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          # Help system
+          cp release_assets/help_index.json dist/
+          cp release_assets/help_*.md dist/
+          # Disk catalog
+          cp release_assets/disks.xml dist/
+          # DOS utilities
+          cp dos/r.com dist/
+          cp dos/w.com dist/
+          # Boot disk (if exists)
+          if [ -f fd/freedos.img ]; then
+            cp fd/freedos.img dist/
+          fi
+          # Hard disk image (if built)
+          if [ -f fd/freedos_hd.img ]; then
+            cp fd/freedos_hd.img dist/
+          fi
+          # Generate checksums
+          cd dist && shasum -a 256 * > SHA256SUMS
+
+      - name: List assets
+        run: ls -la dist/
+
+      - name: Create Release
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.tag }}" \
+            --title "FreeDOS Emulator ${{ inputs.tag }}" \
+            --generate-notes \
+            dist/*

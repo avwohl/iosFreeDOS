@@ -228,7 +228,18 @@ mmd c:/TEMP 2>/dev/null || true
 mmd c:/GAMES 2>/dev/null || true
 mmd c:/APPS 2>/dev/null || true
 
-# 8b. Install games (run scripts/install_games.sh separately)
+# 8a. Install R.COM and W.COM (host file transfer utilities)
+if [ -f "$IMGDIR/dos/r.com" ]; then
+    mcopy -D o "$IMGDIR/dos/r.com" "c:/FREEDOS/BIN/R.COM"
+    mcopy -D o "$IMGDIR/dos/w.com" "c:/FREEDOS/BIN/W.COM"
+    echo "Installed R.COM and W.COM"
+fi
+
+# 8b. Install games
+if [ -f "$IMGDIR/scripts/install_games.sh" ]; then
+    echo "Installing games..."
+    bash "$IMGDIR/scripts/install_games.sh" 2>&1 | tail -3
+fi
 
 # 9. Install the FreeDOS boot sector on the partition
 # We need to write a proper FAT16 boot sector that loads KERNEL.SYS
@@ -320,3 +331,9 @@ mdir c: 2>/dev/null || echo "(mdir failed - check mtoolsrc)"
 echo ""
 echo "Free space:"
 minfo c: 2>/dev/null | grep -i "free\|total" || true
+
+# 11. Create dev copy for testing (won't clobber release data if app writes to it)
+DEVIMG="$IMGDIR/fd/freedos_hd_dev.img"
+cp "$OUTIMG" "$DEVIMG"
+echo ""
+echo "Dev copy: $DEVIMG"

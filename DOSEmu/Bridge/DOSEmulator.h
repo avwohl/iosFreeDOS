@@ -11,7 +11,9 @@ typedef NS_ENUM(NSInteger, DOSDisplayAdapter) {
     DOSDisplayCGA NS_SWIFT_NAME(cga) = 0,
     DOSDisplayMDA NS_SWIFT_NAME(mda) = 1,
     DOSDisplayHercules NS_SWIFT_NAME(hercules) = 2,
-    DOSDisplayCGAMDA NS_SWIFT_NAME(cgaMDA) = 3
+    DOSDisplayCGAMDA NS_SWIFT_NAME(cgaMDA) = 3,
+    DOSDisplayEGA NS_SWIFT_NAME(ega) = 4,
+    DOSDisplayVGA NS_SWIFT_NAME(vga) = 5
 };
 
 // Speed modes
@@ -19,7 +21,9 @@ typedef NS_ENUM(NSInteger, DOSSpeedMode) {
     DOSSpeedFull NS_SWIFT_NAME(full) = 0,
     DOSSpeedPC NS_SWIFT_NAME(pc) = 1,
     DOSSpeedAT NS_SWIFT_NAME(at) = 2,
-    DOSSpeedTurbo NS_SWIFT_NAME(turbo) = 3
+    DOSSpeed386SX NS_SWIFT_NAME(i386sx) = 3,
+    DOSSpeed386DX NS_SWIFT_NAME(i386dx) = 4,
+    DOSSpeed486DX2 NS_SWIFT_NAME(i486dx2) = 5
 };
 
 // Controlify mode
@@ -32,6 +36,8 @@ typedef NS_ENUM(NSInteger, DOSControlifyMode) {
 @protocol DOSEmulatorDelegate <NSObject>
 @optional
 - (void)emulatorVideoRefresh:(NSData*)vramData cols:(int)cols rows:(int)rows;
+- (void)emulatorVideoRefreshGfx:(NSData*)framebuf width:(int)width height:(int)height
+                        palette:(NSData*)palette;
 - (void)emulatorVideoModeChanged:(int)mode cols:(int)cols rows:(int)rows;
 - (void)emulatorVideoSetCursorRow:(int)row col:(int)col;
 - (void)emulatorDidRequestInput;

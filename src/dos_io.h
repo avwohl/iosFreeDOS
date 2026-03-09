@@ -20,6 +20,12 @@ public:
   virtual void video_mode_changed(int mode, int cols, int rows) = 0;
   // vram points to character/attribute pairs (2 bytes per cell)
   virtual void video_refresh(const uint8_t *vram, int cols, int rows) = 0;
+  // Graphics mode: framebuffer is width*height bytes of palette indices,
+  // palette is 256*3 bytes of RGB (0-63 VGA DAC range)
+  virtual void video_refresh_gfx(const uint8_t *framebuf, int width, int height,
+                                  const uint8_t palette[][3]) {
+    (void)framebuf; (void)width; (void)height; (void)palette;
+  }
   virtual void video_set_cursor(int row, int col) = 0;
 
   // Disk I/O (drive: 0=A, 1=B, 0x80=C, 0x81=D, 0xE0=CD-ROM)
@@ -46,6 +52,19 @@ public:
     x = 0; y = 0; buttons = 0;
   }
   virtual bool mouse_present() { return false; }
+
+  // Host file transfer (for R.COM/W.COM guest programs)
+  virtual bool host_file_open_read(const char *path) { (void)path; return false; }
+  virtual bool host_file_open_write(const char *path) { (void)path; return false; }
+  virtual int host_file_read_byte() { return -1; }     // -1 = EOF/error
+  virtual bool host_file_write_byte(uint8_t byte) { (void)byte; return false; }
+  virtual void host_file_close_read() {}
+  virtual void host_file_close_write() {}
+
+  // Network I/O (for NE2000 emulation)
+  virtual void net_send(const uint8_t *data, int len) { (void)data; (void)len; }
+  virtual int net_receive(uint8_t *buf, int maxlen) { (void)buf; (void)maxlen; return 0; }
+  virtual bool net_available() { return false; }
 };
 
 #endif // DOS_IO_H
