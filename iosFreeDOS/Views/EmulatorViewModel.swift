@@ -63,6 +63,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     @Published var gfxImage: UIImage? = nil  // VGA mode 13h framebuffer
     let terminalRows = 25
     let terminalCols = 80
+    weak var terminalView: TerminalUIView?
 
     // Emulator state
     @Published var isRunning: Bool = false
@@ -667,7 +668,12 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                 newCells[row][col] = TerminalCell(character: character, foreground: attr & 0x0F, background: (attr >> 4) & 0x07)
             }
         }
-        terminalCells = newCells
+        // Update UIView directly, bypassing SwiftUI diffing
+        if let tv = terminalView {
+            tv.updateCells(newCells, cursorRow: cursorRow, cursorCol: cursorCol)
+        } else {
+            terminalCells = newCells
+        }
     }
 
     func emulatorVideoRefreshGfx(_ framebuf: Data, width: Int32, height: Int32, palette: Data) {
@@ -699,7 +705,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         gfxImage = nil
         clearTerminal()
     }
-    func emulatorVideoSetCursorRow(_ row: Int32, col: Int32) { cursorRow = Int(row); cursorCol = Int(col) }
+    func emulatorVideoSetCursorRow(_ row: Int32, col: Int32) {
+        cursorRow = Int(row)
+        cursorCol = Int(col)
+        terminalView?.updateCursor(row: cursorRow, col: cursorCol)
+    }
     func emulatorDidRequestInput() { if !terminalShouldFocus { terminalShouldFocus = true } }
 }
 

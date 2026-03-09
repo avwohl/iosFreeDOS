@@ -85,6 +85,7 @@ struct ContentView: View {
                     onKeyInput: { viewModel.sendKey($0) },
                     onSetControlify: { viewModel.setControlify($0) },
                     onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
+                    onViewCreated: { viewModel.terminalView = $0 },
                     isControlifyActive: viewModel.isControlifyActive,
                     rows: viewModel.terminalRows,
                     cols: viewModel.terminalCols,

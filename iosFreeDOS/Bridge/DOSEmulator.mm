@@ -120,6 +120,11 @@ public:
     }
 
     void video_set_cursor(int row, int col) override {
+        // Cursor updates are coalesced with video refresh — only dispatch
+        // if we actually sent a video frame this cycle (avoids flooding main queue)
+        if (_cursor_row == row && _cursor_col == col) return;
+        _cursor_row = row;
+        _cursor_col = col;
         if (delegate && [delegate respondsToSelector:@selector(emulatorVideoSetCursorRow:col:)]) {
             int r = row, c = col;
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -193,6 +198,7 @@ private:
     std::atomic<bool> manifest_write_fired{false};
     mach_timebase_info_data_t _tb;
     uint64_t _last_video_ns;
+    int _cursor_row = -1, _cursor_col = -1;
 
     // Throttle video refreshes to ~60fps to avoid flooding the main queue
     bool should_refresh() {

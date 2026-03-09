@@ -18,6 +18,7 @@ struct TerminalView: UIViewRepresentable {
     @Binding var shouldFocus: Bool
     var onKeyInput: ((Character) -> Void)?
     var onMouseUpdate: ((Int, Int, Int) -> Void)?  // x, y, buttons
+    var onViewCreated: ((TerminalUIView) -> Void)?
 
     let rows: Int
     let cols: Int
@@ -27,12 +28,12 @@ struct TerminalView: UIViewRepresentable {
         let view = TerminalUIView(rows: rows, cols: cols, fontSize: fontSize)
         view.onKeyInput = onKeyInput
         view.onMouseUpdate = onMouseUpdate
+        onViewCreated?(view)
         return view
     }
 
     func updateUIView(_ uiView: TerminalUIView, context: Context) {
         uiView.updateFontSize(fontSize)
-        uiView.updateCells(cells, cursorRow: cursorRow, cursorCol: cursorCol)
         uiView.onMouseUpdate = onMouseUpdate
         if shouldFocus && !uiView.isFirstResponder {
             DispatchQueue.main.async { uiView.becomeFirstResponder() }
@@ -50,6 +51,7 @@ struct TerminalWithToolbar: View {
     var onKeyInput: ((Character) -> Void)?
     var onSetControlify: ((DOSControlifyMode) -> Void)?
     var onMouseUpdate: ((Int, Int, Int) -> Void)?
+    var onViewCreated: ((TerminalUIView) -> Void)?
     var isControlifyActive: Bool = false
 
     let rows: Int
@@ -83,6 +85,7 @@ struct TerminalWithToolbar: View {
                 shouldFocus: $shouldFocus,
                 onKeyInput: onKeyInput,
                 onMouseUpdate: onMouseUpdate,
+                onViewCreated: onViewCreated,
                 rows: rows,
                 cols: cols,
                 fontSize: fontSize
@@ -199,6 +202,12 @@ class TerminalUIView: UIView, UIKeyInput {
         self.cells = newCells
         self.cursorRow = cursorRow
         self.cursorCol = cursorCol
+        setNeedsDisplay()
+    }
+
+    func updateCursor(row: Int, col: Int) {
+        self.cursorRow = row
+        self.cursorCol = col
         setNeedsDisplay()
     }
 
