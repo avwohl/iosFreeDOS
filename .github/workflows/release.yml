@@ -22,8 +22,8 @@ jobs:
       - name: Install NASM
         run: brew install nasm
 
-      - name: Install mtools
-        run: brew install mtools
+      - name: Install mtools and dosfstools
+        run: brew install mtools dosfstools
 
       - name: Build DOS utilities
         run: |
