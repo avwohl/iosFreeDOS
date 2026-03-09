@@ -39,12 +39,78 @@ File transferred.
 
 ## Where Are Host Files?
 
-The meaning of the host path depends on which platform you are running iosFreeDOS on.
+The meaning of the host path depends on which platform you are running
+iosFreeDOS on.
+
+### iOS App (iPhone / iPad)
+
+Every iOS app runs in its own **sandbox** — a private directory that no other
+app can see. Inside the sandbox, the app's **Documents** directory is the
+only place R.COM and W.COM can reach.
+
+When you give R.COM or W.COM a **bare filename** (no `/` prefix), the
+emulator resolves it relative to the Documents directory:
+
+```
+A:\> W DOSFILE.TXT output.txt
+```
+
+`output.txt` is created at `<sandbox>/Documents/output.txt`.
+
+An **absolute path** (starting with `/`) is passed through as-is, but iOS
+still enforces the sandbox — you can only access files inside the app's own
+container. In practice, absolute paths are not useful on iOS.
+
+**Finding the Documents folder on your device:**
+
+1. Open the **Files** app
+2. Navigate to **On My iPhone** (or iPad) → **FreeDOS**
+3. This is the Documents directory — the same place R.COM and W.COM use
+
+To transfer a file **into** DOS:
+
+1. Place the file in the FreeDOS folder using Files, AirDrop, or any sharing
+   method
+2. In DOS, run: `R myfile.txt DOSNAME.TXT`
+
+To transfer a file **out of** DOS:
+
+1. In DOS, run: `W DOSFILE.TXT output.txt`
+2. Open the Files app and find `output.txt` in the FreeDOS folder
+3. Share, AirDrop, or copy it wherever you need
+
+**Note:** The Disks subfolder (`Documents/Disks/`) is also inside this
+directory. You can read/write files there too (e.g., `R Disks/boot.img
+BOOT.IMG`), but be careful not to overwrite your disk images.
+
+### macOS App (Mac Catalyst)
+
+The macOS sandboxed app stores host files in its container:
+
+```
+~/Library/Containers/com.awohl.FreeDOS/Data/Documents/
+```
+
+Bare filenames resolve to this directory. To find it:
+
+1. Open Finder and press **Cmd+Shift+G**
+2. Paste: `~/Library/Containers/com.awohl.FreeDOS/Data/Documents/`
+
+To transfer a file **into** DOS:
+
+1. Copy your file into the folder above
+2. In DOS, run: `R myfile.txt DOSNAME.TXT`
+
+To transfer a file **out of** DOS:
+
+1. In DOS, run: `W DOSFILE.TXT output.txt`
+2. Find `output.txt` in the same container folder in Finder
 
 ### Command-Line Interface (`freedos_cli`)
 
-Host paths are relative to the **current working directory** where you launched
-`freedos_cli`. If you ran `./freedos_cli` from `/home/user/dos`, then:
+Host paths are relative to the **current working directory** where you
+launched `freedos_cli`. If you ran `./freedos_cli` from `/home/user/dos`,
+then:
 
 ```
 A:\> R myfile.txt MYFILE.TXT
@@ -58,44 +124,31 @@ You can also use absolute paths:
 A:\> R /tmp/data.bin DATA.BIN
 ```
 
-### macOS App (Mac Catalyst)
+The CLI is not sandboxed — it can access any file the user account can.
 
-The macOS sandboxed app stores host files in its container:
+## iOS Sandboxing and Path Names
+
+On iOS (and Mac Catalyst), each app gets its own container directory. The
+full path looks like:
 
 ```
-~/Library/Containers/com.awohl.FreeDOS/Data/Documents/
+/var/mobile/Containers/Data/Application/<UUID>/Documents/
 ```
 
-To transfer a file **into** DOS:
+The `<UUID>` is assigned by iOS at install time and changes if you delete
+and reinstall the app. You never need to know this path — just use bare
+filenames and they resolve to this directory automatically.
 
-1. Open Finder and press **Cmd+Shift+G**
-2. Paste: `~/Library/Containers/com.awohl.FreeDOS/Data/Documents/`
-3. Copy your file into this folder
-4. In DOS, run: `R myfile.txt DOSNAME.TXT`
+What this means in practice:
 
-To transfer a file **out of** DOS:
-
-1. In DOS, run: `W DOSFILE.TXT output.txt`
-2. Find `output.txt` in the same container folder in Finder
-
-### iOS App (iPhone / iPad)
-
-On iOS, the app's Documents folder is accessible through the **Files** app:
-
-1. Open the **Files** app on your device
-2. Navigate to **On My iPhone** (or iPad) → **FreeDOS**
-3. This is the folder where R.COM reads from and W.COM writes to
-
-To transfer a file **into** DOS:
-
-1. Place the file in the FreeDOS folder using Files, AirDrop, or any other method
-2. In DOS, run: `R myfile.txt DOSNAME.TXT`
-
-To transfer a file **out of** DOS:
-
-1. In DOS, run: `W DOSFILE.TXT output.txt`
-2. Open the Files app and find `output.txt` in the FreeDOS folder
-3. Share, AirDrop, or copy it wherever you need
+- **Bare filenames** (`output.txt`) — resolve to the Documents directory.
+  This is what you should normally use.
+- **Absolute paths** (`/tmp/foo`) — will fail on iOS because `/tmp` is
+  outside the sandbox. Only paths inside the app's container work.
+- **Subdirectories** (`subdir/file.txt`) — work if the subdirectory exists
+  inside Documents.
+- **No drive letters** — the host path is a native path, not a DOS path.
+  Don't use `C:\` syntax for the host side.
 
 ## Tips
 

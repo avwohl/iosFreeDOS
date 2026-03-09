@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <string>
 #include <mach/mach_time.h>
 
 //=============================================================================
@@ -25,11 +26,22 @@ public:
         }
         mach_timebase_info(&_tb);
         _last_video_ns = 0;
+        host_read_fp = nullptr;
+        host_write_fp = nullptr;
+
+        // Documents directory is the root for host file I/O.
+        // On iOS this is the "FreeDOS" folder visible in the Files app.
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES);
+        if (paths.count > 0)
+            _host_base_dir = [paths[0] UTF8String];
     }
 
     ~dos_io_ios() {
         for (int i = 0; i < MAX_DRIVES; i++)
             delete[] disk_data[i];
+        if (host_read_fp) fclose(host_read_fp);
+        if (host_write_fp) fclose(host_write_fp);
     }
 
     bool load_disk(int drive, const uint8_t *data, size_t size) {
@@ -191,6 +203,41 @@ public:
 
     bool mouse_present() override { return has_mouse; }
 
+    // --- Host file transfer (R.COM / W.COM) ---
+
+    bool host_file_open_read(const char *path) override {
+        if (host_read_fp) fclose(host_read_fp);
+        std::string resolved = resolve_host_path(path);
+        host_read_fp = fopen(resolved.c_str(), "rb");
+        return host_read_fp != nullptr;
+    }
+
+    bool host_file_open_write(const char *path) override {
+        if (host_write_fp) fclose(host_write_fp);
+        std::string resolved = resolve_host_path(path);
+        host_write_fp = fopen(resolved.c_str(), "wb");
+        return host_write_fp != nullptr;
+    }
+
+    int host_file_read_byte() override {
+        if (!host_read_fp) return -1;
+        int ch = fgetc(host_read_fp);
+        return (ch == EOF) ? -1 : ch;
+    }
+
+    bool host_file_write_byte(uint8_t byte) override {
+        if (!host_write_fp) return false;
+        return fputc(byte, host_write_fp) != EOF;
+    }
+
+    void host_file_close_read() override {
+        if (host_read_fp) { fclose(host_read_fp); host_read_fp = nullptr; }
+    }
+
+    void host_file_close_write() override {
+        if (host_write_fp) { fclose(host_write_fp); host_write_fp = nullptr; }
+    }
+
 private:
     uint8_t *disk_data[MAX_DRIVES];
     uint64_t disk_sz[MAX_DRIVES];
@@ -199,6 +246,18 @@ private:
     mach_timebase_info_data_t _tb;
     uint64_t _last_video_ns;
     int _cursor_row = -1, _cursor_col = -1;
+
+    // Host file I/O state
+    FILE *host_read_fp;
+    FILE *host_write_fp;
+    std::string _host_base_dir;
+
+    // Relative paths resolve against the app's Documents directory.
+    // Absolute paths are passed through (iOS sandbox enforces boundaries).
+    std::string resolve_host_path(const char *path) {
+        if (path[0] == '/') return path;
+        return _host_base_dir + "/" + path;
+    }
 
     // Throttle video refreshes to ~60fps to avoid flooding the main queue
     bool should_refresh() {

@@ -23,16 +23,18 @@ File transferred.
 ## Where Are Host Files?
 
 **iOS (iPhone / iPad):**
-Open the **Files** app, go to **On My iPhone** (or iPad), then **FreeDOS**. This is where R.COM reads from and W.COM writes to. You can use AirDrop, iCloud, or any sharing method to get files into this folder.
+When you use a bare filename like `output.txt`, it goes to the app's Documents folder. To find it, open the **Files** app and go to **On My iPhone** (or iPad) → **FreeDOS**. This is where R.COM reads from and W.COM writes to. Use AirDrop, iCloud, or any sharing method to get files into this folder.
+
+Full paths starting with `/` won't work on iOS — the app is sandboxed and can only access its own Documents folder. Just use bare filenames.
 
 **Mac (Catalyst):**
-Host files are in the app's container:
+Bare filenames resolve to the app's container:
 `~/Library/Containers/com.awohl.FreeDOS/Data/Documents/`
 
 Open Finder, press Cmd+Shift+G, and paste that path.
 
 **Command Line (freedos_cli):**
-Host paths are relative to the directory where you launched `freedos_cli`. Absolute paths also work.
+Host paths are relative to the directory where you launched `freedos_cli`. Absolute paths also work. The CLI is not sandboxed.
 
 ## Tips
 
@@ -41,3 +43,4 @@ Host paths are relative to the directory where you launched `freedos_cli`. Absol
 - W.COM creates (or overwrites) the host file
 - Files transfer one byte at a time — large files take a moment
 - Both utilities are on the FreeDOS boot floppy (drive A:)
+- The host path is a native path — don't use DOS drive letters (like `C:\`) for it
