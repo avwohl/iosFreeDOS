@@ -322,6 +322,21 @@ bool dos_machine::run_batch(int count) {
     if (waiting_for_key) {
       // Program is genuinely idle at a keyboard prompt (passed both
       // poll count AND emulated time thresholds). Yield to host.
+
+      // Fast-forward cycles to deliver a timer tick so guest timeouts
+      // still work (e.g. FreeDOS F5/F8 boot prompt). Same approach
+      // as HLT idle handling below.
+      cycles = tick_cycle_mark + CYCLES_PER_TICK;
+      tick_cycle_mark = cycles;
+      uint32_t ticks = bda_r32(bda::TIMER_COUNT) + 1;
+      if (ticks >= 0x1800B0) {
+        ticks = 0;
+        bda_w8(bda::TIMER_ROLLOVER, 1);
+      }
+      bda_w32(bda::TIMER_COUNT, ticks);
+      if (get_flag(FLAG_IF) && !(pic_imr & 0x01))
+        request_int(pic_vector_base);
+
       if (video_mode == 0x13) {
         io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
       } else {

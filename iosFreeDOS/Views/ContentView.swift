@@ -23,14 +23,16 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationView {
+        Group {
             if viewModel.isRunning {
                 runningView
             } else {
-                settingsView
+                NavigationView {
+                    settingsView
+                }
+                .navigationViewStyle(.stack)
             }
         }
-        .navigationViewStyle(.stack)
         .alert("Error", isPresented: $viewModel.showingError) {
             Button("OK") {}
         } message: {
@@ -102,6 +104,8 @@ struct ContentView: View {
                 )
             }
         }
+        .background(Color.black.ignoresSafeArea(.container, edges: .bottom))
+        .ignoresSafeArea(.keyboard)
     }
 
     // MARK: - Settings View
