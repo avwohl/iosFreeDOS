@@ -24,7 +24,8 @@ struct MachineConfig: Codable, Identifiable, Equatable {
     var floppyAFilename: String?
     var floppyBFilename: String?
     var hddCFilename: String?
-    var bootDrive: Int = 0  // 0=A, 0x80=C
+    var hddDFilename: String?
+    var bootDrive: Int = 0  // 0=A, 0x80=C, 0xE0=CD-ROM
 
     // Helpers
     var speedLabel: String {

@@ -14,6 +14,7 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
       tick_cycle_mark(0), refresh_cycle_mark(0),
       speed_mode(SPEED_FULL), target_cps(0),
       waiting_for_key(false),
+      kbd_poll_count(0),
       kbd_cmd_pending(0)
 {
   memset(pit_counter, 0, sizeof(pit_counter));
@@ -70,6 +71,13 @@ void dos_machine::init_machine() {
   init_bda();
   install_bios_stubs();
 
+  // Initialize PIC (8259A) - normally done by BIOS POST
+  // ICW1→ICW2→ICW3→ICW4, then set IMR
+  pic_vector_base = 0x08;  // IRQ 0-7 → INT 08h-0Fh
+  pic_init_step = 0;
+  pic_icw4_needed = false;
+  pic_imr = 0xBC;  // Unmask IRQ0 (timer), IRQ1 (keyboard), IRQ6 (floppy)
+
   // Install mouse if enabled
   if (config.mouse_enabled && io->mouse_present()) {
     mouse.installed = true;
@@ -98,15 +106,9 @@ void dos_machine::init_ivt() {
     bios_entry[vec] = entry;
   }
 
-  // Set IVT entries for BIOS-owned interrupts
-  static const uint8_t bios_vectors[] = {
-    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,  // IRQ 0-7
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-    0x18, 0x19, 0x1A, 0x1B, 0x1C,
-    0x33,  // Mouse driver
-  };
-
-  for (uint8_t vec : bios_vectors) {
+  // Set ALL IVT entries to point to BIOS ROM stubs (IRET fallbacks)
+  // This prevents unhandled INTs from jumping to 0000:0000
+  for (int vec = 0; vec < 256; vec++) {
     uint32_t ivt_addr = vec * 4;
     mem->store_mem16(ivt_addr,     bios_entry[vec]);
     mem->store_mem16(ivt_addr + 2, 0xF000);
@@ -177,6 +179,21 @@ void dos_machine::install_bios_stubs() {
   mem->store_mem16(reset+1, boot_entry);   // offset
   mem->store_mem16(reset+3, 0xF000);       // segment
 
+  // System configuration table at F000:E6F5 (for INT 15h AH=C0h)
+  uint32_t sct = BIOS_ROM_BASE + 0xE6F5;
+  uint8_t sct_data[] = {
+    0x08, 0x00,  // Table length (8 bytes following)
+    0xFF,        // Model ID (0xFF = IBM PC)
+    0x00,        // Submodel (0x00)
+    0x01,        // BIOS revision level
+    0x74,        // Feature byte 1: DMA ch3, cascade int, RTC, kbd intercept
+    0x00,        // Feature byte 2
+    0x00,        // Feature byte 3
+    0x00, 0x00   // Reserved
+  };
+  for (int i = 0; i < 10; i++)
+    mem->store_mem(sct + i, sct_data[i]);
+
   // Disk parameter table at F000:EFC7 (for INT 1Eh)
   uint32_t dpt = BIOS_ROM_BASE + 0xEFC7;
   uint8_t dpt_data[] = {
@@ -246,11 +263,27 @@ void dos_machine::set_speed(SpeedMode mode) {
 
 bool dos_machine::run_batch(int count) {
   waiting_for_key = false;
+  kbd_poll_count = 0;
 
-  for (int i = 0; i < count && !halted; i++) {
-    if (waiting_for_key) return true;
+  for (int i = 0; i < count; i++) {
+    if (waiting_for_key) {
+      // Force a video refresh so screen shows latest VRAM before we yield
+      uint32_t base = vram_base();
+      io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
+      int page = bda_r8(bda::ACTIVE_PAGE);
+      uint16_t pos = bda_r16(bda::CURSOR_POS + page * 2);
+      io->video_set_cursor((pos >> 8) & 0xFF, pos & 0xFF);
+      return true;
+    }
 
-    execute();
+    // Handle HLT: fast-forward to next timer tick and deliver interrupt
+    if (halted) {
+      if (!get_flag(FLAG_IF)) return false;  // HLT with IF=0 is permanent halt
+      // Skip cycles forward to next timer tick
+      cycles = tick_cycle_mark + CYCLES_PER_TICK;
+    } else {
+      execute();
+    }
 
     // Timer tick (cycle-based: 18.2 Hz at 4.77 MHz)
     if (cycles - tick_cycle_mark >= CYCLES_PER_TICK) {
@@ -279,7 +312,8 @@ bool dos_machine::run_batch(int count) {
 
     check_interrupts();
   }
-  return !halted;
+  // HLT with IF=1 is just "waiting for interrupt" (idle), not a dead halt
+  return !halted || get_flag(FLAG_IF);
 }
 
 //=============================================================================
@@ -287,6 +321,11 @@ bool dos_machine::run_batch(int count) {
 //=============================================================================
 
 void dos_machine::dispatch_bios(uint8_t vector) {
+  // Reset keyboard poll counter on non-idle/non-keyboard interrupts
+  // This prevents triggering waiting_for_key during boot I/O
+  if (vector != 0x08 && vector != 0x1C && vector != 0x1A && vector != 0x16)
+    kbd_poll_count = 0;
+
   switch (vector) {
     case 0x08: bios_int08h(); break;
     case 0x10: bios_int10h(); break;
@@ -320,6 +359,9 @@ void dos_machine::do_interrupt(emu88_uint8 vector) {
   // Hooked by DOS/TSR - let normal interrupt flow happen.
   // Our ROM stub will catch it via unimplemented_opcode when the
   // chain reaches our entry point.
+  // Reset keyboard poll counter since non-BIOS interrupt = program activity
+  if (vector != 0x08 && vector != 0x1C && vector != 0x1A)
+    kbd_poll_count = 0;
   emu88::do_interrupt(vector);
 }
 
@@ -349,14 +391,17 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
   switch (port) {
     // --- PIC (8259A) Master ---
     case 0x20:
-      if (value & 0x10) pic_init_step = 1;  // ICW1
+      if (value & 0x10) {
+        pic_init_step = 1;  // ICW1
+        pic_icw4_needed = (value & 0x01);
+      }
       // else: OCW (EOI etc.)
       break;
     case 0x21:
       if (pic_init_step == 1) {
         pic_vector_base = value; pic_init_step = 2;  // ICW2
       } else if (pic_init_step == 2) {
-        pic_init_step = 3;  // ICW3
+        pic_init_step = pic_icw4_needed ? 3 : 0;  // ICW3, then ICW4 if needed
       } else if (pic_init_step == 3) {
         pic_init_step = 0;  // ICW4
       } else {
@@ -524,4 +569,6 @@ void dos_machine::queue_key(uint8_t ascii, uint8_t scancode) {
   bda_w16(bda::KBD_BUF_TAIL, next_tail);
 
   waiting_for_key = false;
+  kbd_poll_count = 0;
+  halted = false;  // Wake from HLT so CPU can process the key
 }

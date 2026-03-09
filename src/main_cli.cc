@@ -493,6 +493,8 @@ static void usage(const char *prog) {
   fprintf(stderr, "  -A FILE SIZE  Create blank floppy A: (SIZE in KB: 360,720,1200,1440,2880)\n");
   fprintf(stderr, "  -B FILE SIZE  Create blank floppy B: (SIZE in KB)\n");
   fprintf(stderr, "  -C FILE SIZE  Create blank hard disk C: (SIZE in MB)\n");
+  fprintf(stderr, "\n  Boot control:\n");
+  fprintf(stderr, "  -boot DRIVE   Boot from: a, c, or cd (default: auto-detect)\n");
   fprintf(stderr, "\n  Speed control:\n");
   fprintf(stderr, "  -s MODE       Speed: full, pc (4.77MHz), at (8MHz), turbo (25MHz)\n");
 }
@@ -505,6 +507,7 @@ int main(int argc, char *argv[]) {
   const char *hdd_c = nullptr;
   const char *cdrom = nullptr;
   int iso_boot_drive = -1;
+  int force_boot_drive = -1;  // -1 = auto-detect
   dos_machine::SpeedMode speed = dos_machine::SPEED_FULL;
 
   // New disk creation specs (file, size)
@@ -531,6 +534,12 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[i], "-C") == 0 && i + 2 < argc) {
       new_c.path = argv[++i];
       new_c.size = strtoull(argv[++i], nullptr, 10);
+    } else if (strcmp(argv[i], "-boot") == 0 && i + 1 < argc) {
+      const char *drv = argv[++i];
+      if (strcasecmp(drv, "a") == 0) force_boot_drive = 0;
+      else if (strcasecmp(drv, "c") == 0) force_boot_drive = 0x80;
+      else if (strcasecmp(drv, "cd") == 0) force_boot_drive = 0xE0;
+      else { fprintf(stderr, "Unknown boot drive: %s (use a, c, or cd)\n", drv); return 1; }
     } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
       const char *mode = argv[++i];
       if (strcasecmp(mode, "full") == 0) speed = dos_machine::SPEED_FULL;
@@ -573,12 +582,21 @@ int main(int argc, char *argv[]) {
   machine.set_speed(speed);
 
   int boot_drive;
-  if (iso_boot_drive >= 0)
+  if (force_boot_drive >= 0) {
+    boot_drive = force_boot_drive;
+    // For CD boot with -boot cd, use El Torito if ISO was loaded
+    if (boot_drive == 0xE0 && iso_boot_drive < 0) {
+      fprintf(stderr, "No CD-ROM ISO loaded for CD boot\n");
+      return 1;
+    }
+    if (boot_drive == 0xE0) boot_drive = iso_boot_drive;
+  } else if (iso_boot_drive >= 0) {
     boot_drive = iso_boot_drive;
-  else if (floppy_a)
+  } else if (floppy_a || new_a.path) {
     boot_drive = 0;
-  else
+  } else {
     boot_drive = 0x80;
+  }
 
   if (boot_drive == 0xE0) {
     // No-emulation CD-ROM boot: load boot image directly, skip normal boot

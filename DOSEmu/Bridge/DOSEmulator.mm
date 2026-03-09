@@ -351,7 +351,14 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
     unsigned long long cycle_start = _machine->cycles;
 
     while (_shouldRun) {
-        _machine->run_batch(50000);
+        bool ok = _machine->run_batch(50000);
+
+        if (!ok) {
+            // CPU permanently halted (HLT with IF=0, or unimplemented opcode)
+            NSLog(@"[DOSEmu] CPU halted at %04X:%04X (cycles=%llu)",
+                  _machine->sregs[dos_machine::seg_CS], _machine->ip, _machine->cycles);
+            break;
+        }
 
         uint32_t cps = 0;
         switch (_machine->get_speed()) {
@@ -383,6 +390,8 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
             [NSThread sleepForTimeInterval:0.0001];
         }
     }
+
+    _shouldRun = NO;
 }
 
 // Input

@@ -9,9 +9,18 @@ struct ContentView: View {
     @StateObject private var viewModel = EmulatorViewModel()
     @State private var fontSize: CGFloat = 14
     @State private var showingSettings = false
-    @State private var showingNewConfig = false
-    @State private var showingSaveAs = false
-    @State private var newConfigName = ""
+    @State private var configAlertMode: ConfigAlertMode? = nil
+    @State private var configAlertText = ""
+
+    private enum ConfigAlertMode {
+        case newConfig, saveAs
+    }
+
+    init() {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        UINavigationBar.appearance().scrollEdgeAppearance = appearance
+    }
 
     var body: some View {
         NavigationView {
@@ -96,28 +105,28 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Start") { viewModel.start() }
-                    .disabled(viewModel.floppyAPath == nil && viewModel.hddCPath == nil)
+                    .disabled(viewModel.floppyAPath == nil && viewModel.hddCPath == nil && viewModel.isoPath == nil)
             }
         }
-        .alert("New Configuration", isPresented: $showingNewConfig) {
-            TextField("Name", text: $newConfigName)
-            Button("Create") {
-                if !newConfigName.isEmpty {
-                    _ = viewModel.configManager.addConfig(name: newConfigName)
-                    newConfigName = ""
+        .alert(
+            configAlertMode == .saveAs ? "Save As" : "New Configuration",
+            isPresented: Binding(
+                get: { configAlertMode != nil },
+                set: { if !$0 { configAlertMode = nil } }
+            )
+        ) {
+            TextField("Name", text: $configAlertText)
+            Button(configAlertMode == .saveAs ? "Save" : "Create") {
+                if !configAlertText.isEmpty {
+                    if configAlertMode == .saveAs {
+                        _ = viewModel.configManager.duplicateConfig(viewModel.config, name: configAlertText)
+                    } else {
+                        _ = viewModel.configManager.addConfig(name: configAlertText)
+                    }
+                    configAlertText = ""
                 }
             }
-            Button("Cancel", role: .cancel) { newConfigName = "" }
-        }
-        .alert("Save As", isPresented: $showingSaveAs) {
-            TextField("Name", text: $newConfigName)
-            Button("Save") {
-                if !newConfigName.isEmpty {
-                    _ = viewModel.configManager.duplicateConfig(viewModel.config, name: newConfigName)
-                    newConfigName = ""
-                }
-            }
-            Button("Cancel", role: .cancel) { newConfigName = "" }
+            Button("Cancel", role: .cancel) { configAlertText = "" }
         }
     }
 
@@ -139,9 +148,9 @@ struct ContentView: View {
             }
 
             HStack {
-                Button("New") { showingNewConfig = true }
+                Button("New") { configAlertText = ""; configAlertMode = .newConfig }
                 Spacer()
-                Button("Save As") { showingSaveAs = true }
+                Button("Save As") { configAlertText = ""; configAlertMode = .saveAs }
                 Spacer()
                 Button("Delete", role: .destructive) {
                     if viewModel.configManager.configs.count > 1 {
@@ -255,6 +264,7 @@ struct ContentView: View {
             diskRow(label: "Floppy A:", path: viewModel.floppyAPath, unit: 0)
             diskRow(label: "Floppy B:", path: viewModel.floppyBPath, unit: 1)
             diskRow(label: "Hard Disk C:", path: viewModel.hddCPath, unit: 0x80)
+            diskRow(label: "Hard Disk D:", path: viewModel.hddDPath, unit: 0x81)
             diskRow(label: "CD-ROM:", path: viewModel.isoPath, unit: 0xE0)
 
             Menu("Create Blank Disk") {
@@ -270,6 +280,19 @@ struct ContentView: View {
         }
     }
 
+    private func catalogDisks(forUnit unit: Int) -> [DownloadableDisk] {
+        viewModel.diskCatalog.filter { disk in
+            let state = viewModel.downloadStates[disk.filename] ?? .notDownloaded
+            guard state == .downloaded else { return false }
+            switch unit {
+            case 0, 1: return disk.type == .floppy
+            case 0x80, 0x81: return disk.type == .hdd
+            case 0xE0: return disk.type == .iso
+            default: return false
+            }
+        }
+    }
+
     func diskRow(label: String, path: URL?, unit: Int) -> some View {
         HStack {
             Text(label)
@@ -279,13 +302,28 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                Button(role: .destructive) { viewModel.removeDisk(unit) } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.red)
+            }
+            Menu {
+                Button { viewModel.loadDisk(unit) } label: {
+                    Label("Load from Files", systemImage: "folder")
                 }
-                .buttonStyle(.plain)
-            } else {
-                Button("Load") { viewModel.loadDisk(unit) }
+                let available = catalogDisks(forUnit: unit)
+                if !available.isEmpty {
+                    Menu("From Catalog") {
+                        ForEach(available) { disk in
+                            Button(disk.name) { viewModel.useCatalogDisk(disk, forDrive: unit) }
+                        }
+                    }
+                }
+                if path != nil {
+                    Divider()
+                    Button(role: .destructive) { viewModel.removeDisk(unit) } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                }
+            } label: {
+                Image(systemName: path != nil ? "ellipsis.circle" : "plus.circle")
+                    .foregroundColor(.accentColor)
             }
         }
     }
@@ -304,10 +342,13 @@ struct ContentView: View {
                 ProgressView(value: viewModel.urlDownloadProgress)
             } else {
                 HStack {
-                    Button("Floppy A:") { viewModel.downloadFromURL(toDrive: 0) }
+                    Button("A:") { viewModel.downloadFromURL(toDrive: 0) }
                         .disabled(viewModel.urlInput.isEmpty)
                     Spacer()
-                    Button("HDD C:") { viewModel.downloadFromURL(toDrive: 0x80) }
+                    Button("C:") { viewModel.downloadFromURL(toDrive: 0x80) }
+                        .disabled(viewModel.urlInput.isEmpty)
+                    Spacer()
+                    Button("D:") { viewModel.downloadFromURL(toDrive: 0x81) }
                         .disabled(viewModel.urlInput.isEmpty)
                     Spacer()
                     Button("CD-ROM") { viewModel.downloadFromURL(toDrive: 0xE0) }
@@ -371,6 +412,7 @@ struct ContentView: View {
                         Button("Use as B:") { viewModel.useCatalogDisk(disk, forDrive: 1) }
                     case .hdd:
                         Button("Use as C:") { viewModel.useCatalogDisk(disk, forDrive: 0x80) }
+                        Button("Use as D:") { viewModel.useCatalogDisk(disk, forDrive: 0x81) }
                     case .iso:
                         Button("Use as CD-ROM") { viewModel.useCatalogDisk(disk, forDrive: 0xE0) }
                     }
@@ -393,6 +435,7 @@ struct ContentView: View {
             Picker("Boot Drive", selection: $viewModel.bootDrive) {
                 Text("Floppy A:").tag(0)
                 Text("Hard Disk C:").tag(0x80)
+                Text("CD-ROM").tag(0xE0)
             }
 
             Button(action: { viewModel.start() }) {
@@ -403,7 +446,7 @@ struct ContentView: View {
                     Spacer()
                 }
             }
-            .disabled(viewModel.floppyAPath == nil && viewModel.hddCPath == nil)
+            .disabled(viewModel.floppyAPath == nil && viewModel.hddCPath == nil && viewModel.isoPath == nil)
         }
     }
 

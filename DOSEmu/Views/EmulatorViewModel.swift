@@ -75,6 +75,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     @Published var floppyAPath: URL? = nil
     @Published var floppyBPath: URL? = nil
     @Published var hddCPath: URL? = nil
+    @Published var hddDPath: URL? = nil
     @Published var isoPath: URL? = nil
     @Published var bootDrive: Int = 0
 
@@ -114,6 +115,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
 
     private var emulator: DOSEmulator?
     private var diskSaveTimer: Timer?
+    private var configCancellable: AnyCancellable?
 
     private let catalogURL = "https://github.com/avwohl/dosemu/releases/latest/download/disks.xml"
     private let releaseBaseURL = "https://github.com/avwohl/dosemu/releases/latest/download"
@@ -133,6 +135,10 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
 
     override init() {
         super.init()
+        configCancellable = configManager.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
         clearTerminal()
         restoreDiskBindings()
         fetchDiskCatalog()
@@ -150,7 +156,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
 
     func start() {
         guard !isRunning else { return }
-        guard floppyAPath != nil || hddCPath != nil else {
+        guard floppyAPath != nil || hddCPath != nil || isoPath != nil else {
             errorMessage = "No disk image loaded."
             showingError = true
             return
@@ -190,6 +196,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                 errorMessage = "Failed to load hard disk C:"
                 showingError = true; return
             }
+            url.stopAccessingSecurityScopedResource()
+        }
+        if let url = hddDPath {
+            _ = url.startAccessingSecurityScopedResource()
+            _ = emulator!.loadDisk(0x81, fromPath: url.path)
             url.stopAccessingSecurityScopedResource()
         }
         if let url = isoPath {
@@ -275,23 +286,30 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     func handleDiskImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
         let bookmark = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
-        switch currentDiskUnit {
+        setDiskPath(currentDiskUnit, url: url, bookmark: bookmark)
+    }
+
+    func setDiskPath(_ unit: Int, url: URL, bookmark: Data? = nil) {
+        switch unit {
         case 0:
-            floppyAPath = url
-            if let d = bookmark { UserDefaults.standard.set(d, forKey: "floppyABookmark") }
-            bootDrive = 0
+            floppyAPath = url; bootDrive = 0
+            if let b = bookmark { UserDefaults.standard.set(b, forKey: "floppyABookmark") }
         case 1:
             floppyBPath = url
-            if let d = bookmark { UserDefaults.standard.set(d, forKey: "floppyBBookmark") }
+            if let b = bookmark { UserDefaults.standard.set(b, forKey: "floppyBBookmark") }
         case 0x80:
-            hddCPath = url
-            if let d = bookmark { UserDefaults.standard.set(d, forKey: "hddCBookmark") }
-            if floppyAPath == nil { bootDrive = 0x80 }
+            hddCPath = url; if floppyAPath == nil { bootDrive = 0x80 }
+            if let b = bookmark { UserDefaults.standard.set(b, forKey: "hddCBookmark") }
+        case 0x81:
+            hddDPath = url
+            if let b = bookmark { UserDefaults.standard.set(b, forKey: "hddDBookmark") }
         case 0xE0:
             isoPath = url
-            if let d = bookmark { UserDefaults.standard.set(d, forKey: "isoBookmark") }
+            if floppyAPath == nil && hddCPath == nil { bootDrive = 0xE0 }
+            if let b = bookmark { UserDefaults.standard.set(b, forKey: "isoBookmark") }
         default: break
         }
+        statusText = "Loaded \(url.lastPathComponent)"
     }
 
     func saveDisk(_ unit: Int) {
@@ -331,7 +349,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
 
     func saveAllDisks() {
         guard let emu = emulator else { return }
-        for (drive, path) in [(0, floppyAPath), (1, floppyBPath), (0x80, hddCPath)] {
+        for (drive, path) in [(0, floppyAPath), (1, floppyBPath), (0x80, hddCPath), (0x81, hddDPath)] {
             guard let url = path, url.path.contains("/Documents/"),
                   let data = emu.getDiskData(Int32(drive)) else { continue }
             try? data.write(to: url)
@@ -345,6 +363,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         case 0: floppyAPath = nil; UserDefaults.standard.removeObject(forKey: "floppyABookmark")
         case 1: floppyBPath = nil; UserDefaults.standard.removeObject(forKey: "floppyBBookmark")
         case 0x80: hddCPath = nil; UserDefaults.standard.removeObject(forKey: "hddCBookmark")
+        case 0x81: hddDPath = nil; UserDefaults.standard.removeObject(forKey: "hddDBookmark")
         case 0xE0: isoPath = nil; UserDefaults.standard.removeObject(forKey: "isoBookmark")
         default: break
         }
@@ -356,7 +375,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
             ("floppyABookmark", { [weak self] u in self?.floppyAPath = u; self?.bootDrive = 0 }),
             ("floppyBBookmark", { [weak self] u in self?.floppyBPath = u }),
             ("hddCBookmark", { [weak self] u in self?.hddCPath = u; if self?.floppyAPath == nil { self?.bootDrive = 0x80 } }),
-            ("isoBookmark", { [weak self] u in self?.isoPath = u })
+            ("hddDBookmark", { [weak self] u in self?.hddDPath = u }),
+            ("isoBookmark", { [weak self] u in self?.isoPath = u; if self?.floppyAPath == nil && self?.hddCPath == nil { self?.bootDrive = 0xE0 } })
         ] {
             if let data = UserDefaults.standard.data(forKey: key) {
                 var stale = false
@@ -381,7 +401,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                     return
                 }
                 if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                    _ = self.loadCachedCatalog() ? () : (self.catalogError = "HTTP \(http.statusCode)")
+                    _ = self.loadCachedCatalog() ? () : (self.catalogError = "HTTP \(http.statusCode) from \(url.absoluteString)")
                     return
                 }
                 guard let data = data else { self.catalogError = "No data"; return }
@@ -490,7 +510,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         case 0: floppyAPath = path; bootDrive = 0
         case 1: floppyBPath = path
         case 0x80: hddCPath = path; if floppyAPath == nil { bootDrive = 0x80 }
-        case 0xE0: isoPath = path
+        case 0x81: hddDPath = path
+        case 0xE0: isoPath = path; if floppyAPath == nil && hddCPath == nil { bootDrive = 0xE0 }
         default: break
         }
         manifestDrives.insert(drive)
@@ -519,7 +540,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                     case 0: self.floppyAPath = dest; self.bootDrive = 0
                     case 1: self.floppyBPath = dest
                     case 0x80: self.hddCPath = dest; if self.floppyAPath == nil { self.bootDrive = 0x80 }
-                    case 0xE0: self.isoPath = dest
+                    case 0x81: self.hddDPath = dest
+                    case 0xE0: self.isoPath = dest; if self.floppyAPath == nil && self.hddCPath == nil { self.bootDrive = 0xE0 }
                     default: break
                     }
                     self.statusText = "Downloaded \(filename)"

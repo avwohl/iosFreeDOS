@@ -106,6 +106,7 @@ private:
   uint8_t pic_imr;
   uint8_t pic_vector_base;
   int pic_init_step;
+  bool pic_icw4_needed;
 
   // PIT state
   uint16_t pit_counter[3];
@@ -136,6 +137,13 @@ private:
 
   // Keyboard wait state
   bool waiting_for_key;
+  int kbd_poll_count;  // Consecutive AH=01 no-key responses
+
+  // How many consecutive AH=01 "no key" polls before yielding.
+  // Must be high enough to avoid triggering during DOS Ctrl-C checks
+  // during file I/O (~5-20 per batch), but low enough to catch tight
+  // polling loops at prompts (~5000+ per batch).
+  static constexpr int KBD_POLL_THRESHOLD = 500;
 
   // Keyboard controller command state (for A20 gate)
   uint8_t kbd_cmd_pending;
