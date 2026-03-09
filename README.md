@@ -6,8 +6,9 @@ and other DOS-compatible operating systems on your iPhone, iPad, or Mac.
 ## Features
 
 - **8088/80186/386 CPU emulator** written in C++ — executes real DOS binaries (real mode only — no protected mode, DPMI, or DOS extenders)
-- **CGA, MDA, and Hercules** display adapters (configurable, including dual CGA+MDA)
+- **CGA, EGA, VGA, MDA, and Hercules** display adapters (configurable, including dual CGA+MDA)
 - **NE2000 network adapter** — DP8390-based Ethernet with standard packet driver support
+- **AdLib and Sound Blaster** sound card emulation
 - **Host file transfer** — R.COM and W.COM utilities move files between DOS and the host
 - **INT 33h mouse driver** with touch-to-mouse mapping on iOS
 - **Keyboard input** with Ctrl key toolbar, Esc, Tab, arrow keys, copy/paste
@@ -15,7 +16,7 @@ and other DOS-compatible operating systems on your iPhone, iPad, or Mac.
 - **Disk image catalog** — browse and download disk images from GitHub releases
 - **Download from URL** — load floppy, HDD, or ISO images from any URL
 - **Named configuration profiles** — save/load machine setups
-- **Speed control** — Full speed, IBM PC 4.77 MHz, IBM AT 8 MHz, or Turbo 25 MHz
+- **Speed control** — Full speed, IBM PC 4.77 MHz, IBM AT 8 MHz, 386SX 16 MHz, 386DX 33 MHz, or 486DX2 66 MHz
 
 ## Compatibility Note
 
@@ -43,8 +44,10 @@ Software titles. See [GAMES.md](GAMES.md) for the full list of bundled games.
 make
 ./freedos_cli -a fd/freedos.img              # Boot FreeDOS from floppy
 ./freedos_cli -c fd/freedos_hd.img -boot c   # Boot from hard disk
-./freedos_cli -cd image.iso -boot cd          # Boot from CD-ROM ISO
+./freedos_cli -d image.iso -boot cd           # Boot from CD-ROM ISO
 ./freedos_cli -a fd/freedos.img -net          # Boot with NE2000 networking
+./freedos_cli -a fd/freedos.img -s pc         # Run at IBM PC 4.77 MHz speed
+./freedos_cli -C newdisk.img 100              # Create 100 MB blank hard disk
 ```
 
 ## File Transfer
@@ -133,7 +136,8 @@ See [docs/BUILDING.md](docs/BUILDING.md) for full details.
 
 ```
 iosFreeDOS/                iOS/macOS app (SwiftUI + Obj-C++ bridge)
-  Views/                   ContentView, TerminalView, HelpView
+  Views/                   ContentView, TerminalView, HelpView,
+                           EmulatorViewModel, MachineConfig
   Bridge/                  DOSEmulator.h/.mm — Obj-C++ bridge
 src/                       C++ emulator core
   emu88.h / emu88.cc       8088/80186/386 CPU emulator
