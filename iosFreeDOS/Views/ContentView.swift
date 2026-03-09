@@ -441,6 +441,8 @@ struct ContentView: View {
                     case .iso:
                         Button("Use as CD-ROM") { viewModel.useCatalogDisk(disk, forDrive: 0xE0) }
                     }
+                    Spacer()
+                    Button("Delete", role: .destructive) { viewModel.deleteCatalogDisk(disk) }
                 }
                 .font(.caption)
             case .error(let msg):

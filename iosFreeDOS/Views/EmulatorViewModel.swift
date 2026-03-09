@@ -119,6 +119,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     private var diskSaveTimer: Timer?
     private var configCancellable: AnyCancellable?
     private var pendingAttachments: [String: Int] = [:]
+    private var bookmarksResolved = false
 
     // Dedicated URLSession with no caching for disk downloads (avoids redirect caching issues)
     private lazy var downloadSession: URLSession = {
@@ -151,7 +152,12 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
                 self?.objectWillChange.send()
             }
         clearTerminal()
-        restoreDiskBindings()
+        _ = loadCachedCatalog()
+        // Resolve disk bookmarks off main thread — bookmark resolution can
+        // stall for seconds per bookmark on real devices, freezing the UI.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.resolveBookmarksInBackground()
+        }
         fetchDiskCatalog()
     }
 
@@ -389,21 +395,34 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         manifestDrives.remove(unit)
     }
 
-    private func restoreDiskBindings() {
-        // Only restore paths; boot drive is persisted per-config
-        for (key, setter): (String, (URL) -> Void) in [
-            ("floppyABookmark", { [weak self] u in self?.floppyAPath = u }),
-            ("floppyBBookmark", { [weak self] u in self?.floppyBPath = u }),
-            ("hddCBookmark", { [weak self] u in self?.hddCPath = u }),
-            ("hddDBookmark", { [weak self] u in self?.hddDPath = u }),
-            ("isoBookmark", { [weak self] u in self?.isoPath = u })
-        ] {
+    /// Resolve security-scoped bookmarks on a background thread, then apply
+    /// results on main.  Bookmark resolution can take seconds per entry on
+    /// real devices (especially after reboot or for iCloud files).
+    private func resolveBookmarksInBackground() {
+        let keys = ["floppyABookmark", "floppyBBookmark", "hddCBookmark", "hddDBookmark", "isoBookmark"]
+        var resolved: [(String, URL)] = []
+        for key in keys {
             if let data = UserDefaults.standard.data(forKey: key) {
                 var stale = false
                 if let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale) {
-                    setter(url)
+                    resolved.append((key, url))
                 }
             }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            for (key, url) in resolved {
+                switch key {
+                case "floppyABookmark": self.floppyAPath = url
+                case "floppyBBookmark": self.floppyBPath = url
+                case "hddCBookmark":    self.hddCPath = url
+                case "hddDBookmark":    self.hddDPath = url
+                case "isoBookmark":     self.isoPath = url
+                default: break
+                }
+            }
+            self.bookmarksResolved = true
+            self.autoAttachDefaultDisks()
         }
     }
 
@@ -455,14 +474,16 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         }
     }
 
-    /// On first launch (no disks attached), auto-download and attach default disks from catalog
+    /// On first launch (no disks attached), auto-download and attach default disks from catalog.
+    /// Waits for bookmark resolution so we know whether the user already has disks attached.
     private func autoAttachDefaultDisks() {
+        guard bookmarksResolved else { return }
         let hasAnyDisk = floppyAPath != nil || floppyBPath != nil || hddCPath != nil || hddDPath != nil || isoPath != nil
         guard !hasAnyDisk else { return }
 
         for disk in diskCatalog {
             guard let drive = disk.defaultDrive else { continue }
-            useCatalogDisk(disk, forDrive: drive)
+            attachOrDownloadCatalogDisk(disk, forDrive: drive)
         }
     }
 
@@ -591,16 +612,40 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         task.resume()
     }
 
+    /// Explicit user selection from catalog — always re-download to ensure
+    /// the latest version from the server.
     func useCatalogDisk(_ disk: DownloadableDisk, forDrive drive: Int) {
+        pendingAttachments[disk.filename] = drive
+        statusText = "Downloading \(disk.name)..."
+        downloadDisk(disk)
+    }
+
+    /// Use cached disk if available, otherwise download.  Used for
+    /// auto-attach on startup to avoid unnecessary network traffic.
+    private func attachOrDownloadCatalogDisk(_ disk: DownloadableDisk, forDrive drive: Int) {
         let path = disksDirectory.appendingPathComponent(disk.filename)
         if FileManager.default.fileExists(atPath: path.path) {
             attachDiskPath(path, forDrive: drive, diskName: disk.name)
             manifestDrives.insert(drive)
         } else {
-            // Need to download first - attach after download completes
             pendingAttachments[disk.filename] = drive
             statusText = "Downloading \(disk.name)..."
             downloadDisk(disk)
+        }
+    }
+
+    /// Delete a downloaded catalog disk image from local storage.
+    func deleteCatalogDisk(_ disk: DownloadableDisk) {
+        let path = disksDirectory.appendingPathComponent(disk.filename)
+        try? FileManager.default.removeItem(at: path)
+        downloadStates[disk.filename] = .notDownloaded
+        // Detach from any drive that references this file
+        let pairs: [(Int, URL?)] = [(0, floppyAPath), (1, floppyBPath),
+                                     (0x80, hddCPath), (0x81, hddDPath), (0xE0, isoPath)]
+        for (unit, diskPath) in pairs {
+            if diskPath?.lastPathComponent == disk.filename {
+                removeDisk(unit)
+            }
         }
     }
 
