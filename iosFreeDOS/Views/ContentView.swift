@@ -50,6 +50,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             viewModel.saveDisksOnBackground()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+            viewModel.saveDisksOnBackground()
+            viewModel.stop()
+        }
     }
 
     // MARK: - Running View
@@ -84,9 +88,14 @@ struct ContentView: View {
                     shouldFocus: $viewModel.terminalShouldFocus,
                     onKeyInput: { viewModel.sendKey($0) },
                     onSetControlify: { viewModel.setControlify($0) },
+                    onScancode: { a, s in viewModel.sendDirectScancode(ascii: a, scancode: s) },
+                    onToggleFn: { viewModel.isFnActive.toggle() },
+                    onToggleAlt: { viewModel.isAltActive.toggle() },
                     onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
                     onViewCreated: { viewModel.terminalView = $0 },
                     isControlifyActive: viewModel.isControlifyActive,
+                    isFnActive: viewModel.isFnActive,
+                    isAltActive: viewModel.isAltActive,
                     rows: viewModel.terminalRows,
                     cols: viewModel.terminalCols,
                     fontSize: fontSize

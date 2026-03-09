@@ -69,6 +69,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     @Published var isRunning: Bool = false
     @Published var statusText: String = ""
     @Published var isControlifyActive: Bool = false
+    @Published var isFnActive: Bool = false
+    @Published var isAltActive: Bool = false
 
     // Configuration
     @Published var configManager = ConfigManager()
@@ -267,6 +269,8 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     func sendKey(_ char: Character) {
         guard let emu = emulator else { return }
         let scalar = char.unicodeScalars.first?.value ?? 0
+
+        // Arrow keys (private-use Unicode values from UIKeyCommand)
         switch scalar {
         case 0xF700: emu.sendScancode(0, scancode: 0x48); return
         case 0xF701: emu.sendScancode(0, scancode: 0x50); return
@@ -274,7 +278,32 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         case 0xF703: emu.sendScancode(0, scancode: 0x4D); return
         default: break
         }
+
+        // Fn mode: digits → function keys
+        if isFnActive {
+            if let fScan = Self.fnScancode(for: scalar) {
+                isFnActive = false
+                emu.sendScancode(0, scancode: fScan)
+                return
+            }
+            isFnActive = false  // non-digit cancels Fn
+        }
+
+        // Alt mode: key → Alt+key (ascii=0, same scancode)
+        if isAltActive {
+            if let scan = Self.charToScancode(scalar) {
+                isAltActive = false
+                emu.sendScancode(0, scancode: scan)
+                return
+            }
+            isAltActive = false
+        }
+
         emu.sendCharacter(char.unicodeScalars.first.map { unichar($0.value) } ?? 0)
+    }
+
+    func sendDirectScancode(ascii: UInt8, scancode: UInt8) {
+        emulator?.sendScancode(ascii, scancode: scancode)
     }
 
     func sendMouseUpdate(x: Int, y: Int, buttons: Int) {
@@ -284,6 +313,47 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
     func setControlify(_ mode: DOSControlifyMode) {
         emulator?.setControlify(mode)
         isControlifyActive = (mode != .off)
+    }
+
+    // MARK: - Scancode Tables
+
+    /// Map digit keys to function key scancodes (Fn modifier)
+    private static func fnScancode(for scalar: UInt32) -> UInt8? {
+        switch scalar {
+        case 0x31: return 0x3B  // 1→F1
+        case 0x32: return 0x3C  // 2→F2
+        case 0x33: return 0x3D  // 3→F3
+        case 0x34: return 0x3E  // 4→F4
+        case 0x35: return 0x3F  // 5→F5
+        case 0x36: return 0x40  // 6→F6
+        case 0x37: return 0x41  // 7→F7
+        case 0x38: return 0x42  // 8→F8
+        case 0x39: return 0x43  // 9→F9
+        case 0x30: return 0x44  // 0→F10
+        case 0x2D: return 0x57  // -→F11
+        case 0x3D: return 0x58  // =→F12
+        default:   return nil
+        }
+    }
+
+    /// Map ASCII character to IBM PC keyboard scancode
+    private static func charToScancode(_ scalar: UInt32) -> UInt8? {
+        switch scalar {
+        case 0x61...0x7A: // a-z
+            let t: [UInt8] = [0x1E,0x30,0x2E,0x20,0x12,0x21,0x22,0x23,0x17,0x24,
+                              0x25,0x26,0x32,0x31,0x18,0x19,0x10,0x13,0x1F,0x14,
+                              0x16,0x2F,0x11,0x2D,0x15,0x2C]
+            return t[Int(scalar - 0x61)]
+        case 0x41...0x5A: return charToScancode(scalar + 0x20) // A-Z
+        case 0x31...0x39: return UInt8(scalar - 0x31 + 0x02)   // 1-9
+        case 0x30: return 0x0B  // 0
+        case 0x2D: return 0x0C  // -
+        case 0x3D: return 0x0D  // =
+        case 0x09: return 0x0F  // Tab
+        case 0x0D: return 0x1C  // Enter
+        case 0x20: return 0x39  // Space
+        default:   return nil
+        }
     }
 
     func setSpeed(_ mode: DOSSpeedMode) {

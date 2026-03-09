@@ -98,22 +98,27 @@ public:
     bool console_has_input() override { return false; }
     int console_read() override { return -1; }
 
+    // Each dispatch block captures a strong local ref to delegate so the
+    // block remains safe even if dos_io_ios is freed before it executes.
+
     void video_mode_changed(int mode, int cols, int rows) override {
-        if (delegate && [delegate respondsToSelector:@selector(emulatorVideoModeChanged:cols:rows:)]) {
+        id d = delegate;
+        if (d && [d respondsToSelector:@selector(emulatorVideoModeChanged:cols:rows:)]) {
             int m = mode, c = cols, r = rows;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [delegate emulatorVideoModeChanged:m cols:c rows:r];
+                [d emulatorVideoModeChanged:m cols:c rows:r];
             });
         }
     }
 
     void video_refresh(const uint8_t *vram, int cols, int rows) override {
         if (!should_refresh()) return;
-        if (delegate && [delegate respondsToSelector:@selector(emulatorVideoRefresh:cols:rows:)]) {
+        id d = delegate;
+        if (d && [d respondsToSelector:@selector(emulatorVideoRefresh:cols:rows:)]) {
             NSData *data = [NSData dataWithBytes:vram length:cols * rows * 2];
             int c = cols, r = rows;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [delegate emulatorVideoRefresh:data cols:c rows:r];
+                [d emulatorVideoRefresh:data cols:c rows:r];
             });
         }
     }
@@ -121,26 +126,26 @@ public:
     void video_refresh_gfx(const uint8_t *framebuf, int width, int height,
                             const uint8_t palette[][3]) override {
         if (!should_refresh()) return;
-        if (delegate && [delegate respondsToSelector:@selector(emulatorVideoRefreshGfx:width:height:palette:)]) {
+        id d = delegate;
+        if (d && [d respondsToSelector:@selector(emulatorVideoRefreshGfx:width:height:palette:)]) {
             NSData *fb = [NSData dataWithBytes:framebuf length:width * height];
             NSData *pal = [NSData dataWithBytes:palette length:256 * 3];
             int w = width, h = height;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [delegate emulatorVideoRefreshGfx:fb width:w height:h palette:pal];
+                [d emulatorVideoRefreshGfx:fb width:w height:h palette:pal];
             });
         }
     }
 
     void video_set_cursor(int row, int col) override {
-        // Cursor updates are coalesced with video refresh — only dispatch
-        // if we actually sent a video frame this cycle (avoids flooding main queue)
         if (_cursor_row == row && _cursor_col == col) return;
         _cursor_row = row;
         _cursor_col = col;
-        if (delegate && [delegate respondsToSelector:@selector(emulatorVideoSetCursorRow:col:)]) {
+        id d = delegate;
+        if (d && [d respondsToSelector:@selector(emulatorVideoSetCursorRow:col:)]) {
             int r = row, c = col;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [delegate emulatorVideoSetCursorRow:r col:c];
+                [d emulatorVideoSetCursorRow:r col:c];
             });
         }
     }
@@ -429,8 +434,11 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
 
 - (void)stop {
     if (!_shouldRun) return;
+    // Nil delegate first to stop dispatch_async to main queue, preventing
+    // deadlock when dispatch_sync waits for the emulator queue while the
+    // emulator queue is waiting to dispatch to main (crash on app quit).
+    if (_io) _io->delegate = nil;
     _shouldRun = NO;
-    // Wait for the emulator thread to finish before returning
     dispatch_sync(_emulatorQueue, ^{});
 }
 
@@ -498,9 +506,10 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
         }
 
         if (_machine->is_waiting_for_key()) {
-            if (_io->delegate && [_io->delegate respondsToSelector:@selector(emulatorDidRequestInput)]) {
+            id d = _io->delegate;
+            if (d && [d respondsToSelector:@selector(emulatorDidRequestInput)]) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [self->_io->delegate emulatorDidRequestInput];
+                    [d emulatorDidRequestInput];
                 });
             }
             // Idle at prompt: sleep 10ms for responsive key echo.

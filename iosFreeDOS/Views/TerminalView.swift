@@ -17,6 +17,7 @@ struct TerminalView: UIViewRepresentable {
     @Binding var cursorCol: Int
     @Binding var shouldFocus: Bool
     var onKeyInput: ((Character) -> Void)?
+    var onScancode: ((UInt8, UInt8) -> Void)?  // ascii, scancode
     var onMouseUpdate: ((Int, Int, Int) -> Void)?  // x, y, buttons
     var onViewCreated: ((TerminalUIView) -> Void)?
 
@@ -27,6 +28,7 @@ struct TerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalUIView {
         let view = TerminalUIView(rows: rows, cols: cols, fontSize: fontSize)
         view.onKeyInput = onKeyInput
+        view.onScancode = onScancode
         view.onMouseUpdate = onMouseUpdate
         onViewCreated?(view)
         return view
@@ -34,6 +36,7 @@ struct TerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: TerminalUIView, context: Context) {
         uiView.updateFontSize(fontSize)
+        uiView.onScancode = onScancode
         uiView.onMouseUpdate = onMouseUpdate
         if shouldFocus && !uiView.isFirstResponder {
             DispatchQueue.main.async { uiView.becomeFirstResponder() }
@@ -50,9 +53,14 @@ struct TerminalWithToolbar: View {
     @Binding var shouldFocus: Bool
     var onKeyInput: ((Character) -> Void)?
     var onSetControlify: ((DOSControlifyMode) -> Void)?
+    var onScancode: ((UInt8, UInt8) -> Void)?
+    var onToggleFn: (() -> Void)?
+    var onToggleAlt: (() -> Void)?
     var onMouseUpdate: ((Int, Int, Int) -> Void)?
     var onViewCreated: ((TerminalUIView) -> Void)?
     var isControlifyActive: Bool = false
+    var isFnActive: Bool = false
+    var isAltActive: Bool = false
 
     let rows: Int
     let cols: Int
@@ -61,9 +69,20 @@ struct TerminalWithToolbar: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 6) {
+                // Modifier toggles
                 ToolbarButton(title: "Ctrl", isActive: isControlifyActive) {
                     onSetControlify?(isControlifyActive ? .off : .oneChar)
                 }
+                ToolbarButton(title: "Alt", isActive: isAltActive) {
+                    onToggleAlt?()
+                }
+                ToolbarButton(title: "Fn", isActive: isFnActive) {
+                    onToggleFn?()
+                }
+
+                Divider().frame(width: 28).padding(.vertical, 2)
+
+                // Common special keys
                 ToolbarButton(title: "Esc", isActive: false) {
                     onSetControlify?(.off)
                     onKeyInput?(Character(UnicodeScalar(27)))
@@ -72,6 +91,29 @@ struct TerminalWithToolbar: View {
                     onSetControlify?(.off)
                     onKeyInput?(Character(UnicodeScalar(9)))
                 }
+                ToolbarButton(title: "Del", isActive: false) {
+                    onScancode?(0, 0x53)
+                }
+                ToolbarButton(title: "Ins", isActive: false) {
+                    onScancode?(0, 0x52)
+                }
+
+                Divider().frame(width: 28).padding(.vertical, 2)
+
+                // Navigation
+                ToolbarButton(title: "PgU", isActive: false) {
+                    onScancode?(0, 0x49)
+                }
+                ToolbarButton(title: "PgD", isActive: false) {
+                    onScancode?(0, 0x51)
+                }
+                ToolbarButton(title: "Hom", isActive: false) {
+                    onScancode?(0, 0x47)
+                }
+                ToolbarButton(title: "End", isActive: false) {
+                    onScancode?(0, 0x4F)
+                }
+
                 Spacer()
             }
             .padding(.vertical, 8)
@@ -84,6 +126,7 @@ struct TerminalWithToolbar: View {
                 cursorCol: $cursorCol,
                 shouldFocus: $shouldFocus,
                 onKeyInput: onKeyInput,
+                onScancode: onScancode,
                 onMouseUpdate: onMouseUpdate,
                 onViewCreated: onViewCreated,
                 rows: rows,
@@ -117,6 +160,7 @@ struct ToolbarButton: View {
 
 class TerminalUIView: UIView, UIKeyInput {
     var onKeyInput: ((Character) -> Void)?
+    var onScancode: ((UInt8, UInt8) -> Void)?
     var onMouseUpdate: ((Int, Int, Int) -> Void)?
 
     private let rows: Int
@@ -383,10 +427,73 @@ class TerminalUIView: UIView, UIKeyInput {
         var handled = false
         for press in presses {
             guard let key = press.key else { continue }
-            if key.modifierFlags.contains(.command) || key.modifierFlags.contains(.control) { continue }
+
+            // Function keys and navigation keys via HID keyCode
+            if let scan = Self.hidToDosScancode(key.keyCode) {
+                onScancode?(0, scan)
+                handled = true
+                continue
+            }
+
+            // Skip Cmd combos (system shortcuts, handled by keyCommands)
+            if key.modifierFlags.contains(.command) { continue }
+            // Ctrl combos handled by keyCommands
+            if key.modifierFlags.contains(.control) { continue }
+
+            // Alt/Option+key: send scancode with ascii=0
+            if key.modifierFlags.contains(.alternate) {
+                for ch in key.charactersIgnoringModifiers {
+                    if let a = ch.asciiValue, let scan = Self.charToDosScancode(a) {
+                        onScancode?(0, scan)
+                        handled = true
+                    }
+                }
+                continue
+            }
+
             for ch in key.characters { onKeyInput?(ch); handled = true }
         }
         if !handled { super.pressesBegan(presses, with: event) }
+    }
+
+    /// Map USB HID key codes to IBM PC scancodes for keys not in the text input path
+    private static func hidToDosScancode(_ usage: UIKeyboardHIDUsage) -> UInt8? {
+        switch usage {
+        case .keyboardF1:            return 0x3B
+        case .keyboardF2:            return 0x3C
+        case .keyboardF3:            return 0x3D
+        case .keyboardF4:            return 0x3E
+        case .keyboardF5:            return 0x3F
+        case .keyboardF6:            return 0x40
+        case .keyboardF7:            return 0x41
+        case .keyboardF8:            return 0x42
+        case .keyboardF9:            return 0x43
+        case .keyboardF10:           return 0x44
+        case .keyboardF11:           return 0x57
+        case .keyboardF12:           return 0x58
+        case .keyboardHome:          return 0x47
+        case .keyboardEnd:           return 0x4F
+        case .keyboardPageUp:        return 0x49
+        case .keyboardPageDown:      return 0x51
+        case .keyboardInsert:        return 0x52
+        case .keyboardDeleteForward: return 0x53
+        default:                     return nil
+        }
+    }
+
+    /// Map ASCII to IBM PC scancode (for Alt+key on hardware keyboards)
+    private static func charToDosScancode(_ ascii: UInt8) -> UInt8? {
+        switch ascii {
+        case 0x61...0x7A: // a-z
+            let t: [UInt8] = [0x1E,0x30,0x2E,0x20,0x12,0x21,0x22,0x23,0x17,0x24,
+                              0x25,0x26,0x32,0x31,0x18,0x19,0x10,0x13,0x1F,0x14,
+                              0x16,0x2F,0x11,0x2D,0x15,0x2C]
+            return t[Int(ascii - 0x61)]
+        case 0x41...0x5A: return charToDosScancode(ascii + 0x20)
+        case 0x31...0x39: return UInt8(ascii - 0x31 + 0x02)
+        case 0x30: return 0x0B
+        default:   return nil
+        }
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
