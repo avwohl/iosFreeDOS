@@ -23,6 +23,8 @@ public:
             disk_sz[i] = 0;
             disk_is_manifest[i] = false;
         }
+        mach_timebase_info(&_tb);
+        _last_video_ns = 0;
     }
 
     ~dos_io_ios() {
@@ -94,6 +96,7 @@ public:
     }
 
     void video_refresh(const uint8_t *vram, int cols, int rows) override {
+        if (!should_refresh()) return;
         if (delegate && [delegate respondsToSelector:@selector(emulatorVideoRefresh:cols:rows:)]) {
             NSData *data = [NSData dataWithBytes:vram length:cols * rows * 2];
             int c = cols, r = rows;
@@ -105,6 +108,7 @@ public:
 
     void video_refresh_gfx(const uint8_t *framebuf, int width, int height,
                             const uint8_t palette[][3]) override {
+        if (!should_refresh()) return;
         if (delegate && [delegate respondsToSelector:@selector(emulatorVideoRefreshGfx:width:height:palette:)]) {
             NSData *fb = [NSData dataWithBytes:framebuf length:width * height];
             NSData *pal = [NSData dataWithBytes:palette length:256 * 3];
@@ -187,6 +191,16 @@ private:
     uint64_t disk_sz[MAX_DRIVES];
     bool disk_is_manifest[MAX_DRIVES];
     std::atomic<bool> manifest_write_fired{false};
+    mach_timebase_info_data_t _tb;
+    uint64_t _last_video_ns;
+
+    // Throttle video refreshes to ~60fps to avoid flooding the main queue
+    bool should_refresh() {
+        uint64_t now = mach_absolute_time() * _tb.numer / _tb.denom;
+        if (now - _last_video_ns < 16000000) return false;  // 16ms
+        _last_video_ns = now;
+        return true;
+    }
 
     int drive_index(int drive) {
         if (drive >= 0 && drive < 2) return drive;
@@ -346,14 +360,17 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
     dispatch_async(_emulatorQueue, ^{ [self runLoop]; });
 }
 
-- (void)stop { _shouldRun = NO; }
+- (void)stop {
+    if (!_shouldRun) return;
+    _shouldRun = NO;
+    // Wait for the emulator thread to finish before returning
+    dispatch_sync(_emulatorQueue, ^{});
+}
 
 - (void)reset {
     [self stop];
-    dispatch_sync(_emulatorQueue, ^{
-        self->_machine.reset();
-        self->_mem.reset();
-    });
+    _machine.reset();
+    _mem.reset();
 }
 
 - (void)runLoop {

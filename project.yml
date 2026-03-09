@@ -25,6 +25,8 @@ targets:
     settings:
       base:
         SWIFT_OBJC_BRIDGING_HEADER: iosFreeDOS/iosFreeDOS-Bridging-Header.h
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - IOSFREEDOS_VERSION="\"v$(MARKETING_VERSION) ($(CURRENT_PROJECT_VERSION))\""
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/src
           - $(SRCROOT)/iosFreeDOS/Bridge
@@ -32,7 +34,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortraitUpsideDown
         INFOPLIST_KEY_UIRequiresFullScreen: NO
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: 8
+        CURRENT_PROJECT_VERSION: 9
         PRODUCT_BUNDLE_IDENTIFIER: com.awohl.FreeDOS
         INFOPLIST_KEY_CFBundleDisplayName: FreeDOS
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO

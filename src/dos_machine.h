@@ -5,6 +5,10 @@
 #include "dos_io.h"
 #include "ne2000.h"
 
+#ifndef IOSFREEDOS_VERSION
+#define IOSFREEDOS_VERSION "dev"
+#endif
+
 // PC memory map
 static constexpr uint32_t VGA_VRAM_BASE  = 0xA0000;
 static constexpr uint32_t MDA_VRAM_BASE  = 0xB0000;

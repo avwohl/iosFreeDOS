@@ -129,6 +129,9 @@ class TerminalUIView: UIView, UIKeyInput {
     // Mouse tracking
     private var mouseButtons: Int = 0
 
+    // Haptic feedback for keyboard
+    private let keyFeedback = UIImpactFeedbackGenerator(style: .light)
+
     private let cgaColors: [UIColor] = [
         UIColor(red: 0/255, green: 0/255, blue: 0/255, alpha: 1),
         UIColor(red: 0/255, green: 0/255, blue: 170/255, alpha: 1),
@@ -313,10 +316,12 @@ class TerminalUIView: UIView, UIKeyInput {
     var hasText: Bool { true }
 
     func insertText(_ text: String) {
+        keyFeedback.impactOccurred()
         for char in text { onKeyInput?(char) }
     }
 
     func deleteBackward() {
+        keyFeedback.impactOccurred()
         onKeyInput?(Character(UnicodeScalar(8)))
     }
 

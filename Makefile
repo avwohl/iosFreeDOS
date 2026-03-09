@@ -1,5 +1,7 @@
 CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++17 -O2 -g
+APP_VERSION := $(shell grep 'MARKETING_VERSION:' project.yml | head -1 | sed 's/.*: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/')
+APP_BUILD := $(shell grep 'CURRENT_PROJECT_VERSION:' project.yml | head -1 | sed 's/.*: *\([0-9]*\)/\1/')
+CXXFLAGS = -Wall -Wextra -std=c++17 -O2 -g -DIOSFREEDOS_VERSION='"v$(APP_VERSION) ($(APP_BUILD))"'
 NASM = nasm
 SRCDIR = src
 OBJDIR = obj
