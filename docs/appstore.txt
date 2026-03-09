@@ -68,12 +68,12 @@ Utilities
 
 SUPPORT URL
 -----------
-https://github.com/avwohl/dosemu
+https://github.com/avwohl/iosFreeDOS
 
 
 PRIVACY POLICY URL
 ------------------
-https://github.com/avwohl/dosemu/blob/main/PRIVACY.md
+https://github.com/avwohl/iosFreeDOS/blob/main/PRIVACY.md
 
 
 COPYRIGHT

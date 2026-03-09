@@ -52,8 +52,8 @@ The manifest is an XML file listing all available disk images:
 
 Clients use these hardcoded URLs:
 ```
-Catalog:  https://github.com/avwohl/dosemu/releases/latest/download/disks.xml
-Base URL: https://github.com/avwohl/dosemu/releases/latest/download/
+Catalog:  https://github.com/avwohl/iosFreeDOS/releases/latest/download/disks.xml
+Base URL: https://github.com/avwohl/iosFreeDOS/releases/latest/download/
 ```
 
 ### Creating a Release

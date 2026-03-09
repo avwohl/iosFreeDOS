@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "base_url": "https://github.com/avwohl/dosemu/releases/latest/download/",
+  "base_url": "https://github.com/avwohl/iosFreeDOS/releases/latest/download/",
   "topics": [
     {
       "id": "quick_start",

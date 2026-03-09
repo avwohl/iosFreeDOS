@@ -21,7 +21,7 @@ GitHub Release Assets:
 
 Clients fetch from:
 ```
-https://github.com/avwohl/dosemu/releases/latest/download/
+https://github.com/avwohl/iosFreeDOS/releases/latest/download/
 ```
 
 ## help_index.json Format
@@ -29,7 +29,7 @@ https://github.com/avwohl/dosemu/releases/latest/download/
 ```json
 {
   "version": 1,
-  "base_url": "https://github.com/avwohl/dosemu/releases/latest/download/",
+  "base_url": "https://github.com/avwohl/iosFreeDOS/releases/latest/download/",
   "topics": [
     {
       "id": "quick_start",
