@@ -334,10 +334,10 @@ bool dos_machine::run_batch(int count) {
       return true;
     }
 
-    // Handle HLT: fast-forward to next timer tick and deliver interrupt
+    // Handle HLT: fast-forward to next timer tick and deliver interrupt,
+    // then exit batch so the host can yield CPU time (DOSBox-style idle)
     if (halted) {
       if (!get_flag(FLAG_IF)) return false;  // HLT with IF=0 is permanent halt
-      // Skip cycles forward to next timer tick
       cycles = tick_cycle_mark + CYCLES_PER_TICK;
     } else {
       execute();
@@ -355,6 +355,13 @@ bool dos_machine::run_batch(int count) {
 
       if (get_flag(FLAG_IF) && !(pic_imr & 0x01))
         request_int(pic_vector_base);
+
+      // After delivering the timer tick that wakes from HLT, exit the
+      // batch so the host run loop can yield (saves battery on mobile)
+      if (halted) {
+        check_interrupts();  // deliver the tick interrupt to un-halt
+        break;
+      }
     }
 
     // Video refresh (cycle-based: ~30 Hz)

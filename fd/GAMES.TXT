@@ -1,0 +1,39 @@
+              iosFreeDOS - Bundled Games Guide
+              ===================================
+
+  All games run with VGA display. Sound: PC Speaker works in all
+  games. AdLib/Sound Blaster works where noted.
+
+  GAME              DIRECTORY          RUN COMMAND    SOUND
+  ----              ---------          -----------    -----
+  Alien Carnage     C:\GAMES\ALIENCAR  CARNAGE        SB/AdLib
+  Bio Menace        C:\GAMES\BIOMENAC  BMENACE1       SB/AdLib
+  Dark Ages Ep.1    C:\GAMES\DARKAGES  CD 1 & DA1     PC Speaker
+  Duke Nukem 1      C:\GAMES\DUKE1     DN1            PC Speaker
+  God of Thunder    C:\GAMES\GOT       GOT            PC Speaker
+  Jill of Jungle    C:\GAMES\JILL      JILL1          SB/AdLib
+  Kingdom of Kroz   C:\GAMES\KROZ      KINGDOM        PC Speaker
+  Major Stryker     C:\GAMES\STRYKER   STRYKER        SB/AdLib
+  SkyRoads          C:\GAMES\SKYROADS  SKYROADS       PC Speaker
+  Supaplex          C:\GAMES\SUPAPLEX  SPFIX63        SB/AdLib
+  Xargon            C:\GAMES\XARGON    XARGON         SB/AdLib
+
+  QUICK START
+  -----------
+  1. Type:  CD \GAMES\DUKE1
+  2. Type:  DN1
+  3. Play!
+
+  SOUND SETUP
+  -----------
+  For games with Sound Blaster/AdLib support, choose:
+    Sound Blaster at I/O 220, IRQ 7, DMA 1
+    -or- AdLib (music only)
+  If a game asks, pick "Sound Blaster" or "AdLib".
+
+  NOTES
+  -----
+  - Dark Ages has 3 episodes in subdirs 1, 2, 3. Run DA1, DA2, DA3.
+  - Kroz asks "Color or Monochrome?" at start. Pick Color.
+  - God of Thunder: run SETBLAST first to configure sound.
+  - Supaplex: the executable is SPFIX63 (community fixed version).

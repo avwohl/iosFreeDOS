@@ -382,19 +382,22 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
 - (void)runLoop {
     mach_timebase_info_data_t timebase;
     mach_timebase_info(&timebase);
-    uint64_t wall_start = mach_absolute_time();
-    unsigned long long cycle_start = _machine->cycles;
+
+    // Per-batch throttle: reset baseline each batch to avoid cumulative drift
+    uint64_t batch_wall_start = mach_absolute_time();
+    unsigned long long batch_cycle_start = _machine->cycles;
 
     while (_shouldRun) {
-        bool ok = _machine->run_batch(50000);
+        // Smaller batches = more responsive key echo (~20ms at 4.77 MHz)
+        bool ok = _machine->run_batch(10000);
 
         if (!ok) {
-            // CPU permanently halted (HLT with IF=0, or unimplemented opcode)
-            NSLog(@"[DOSEmu] CPU halted at %04X:%04X (cycles=%llu)",
+            NSLog(@"[FreeDOS] CPU halted at %04X:%04X (cycles=%llu)",
                   _machine->sregs[dos_machine::seg_CS], _machine->ip, _machine->cycles);
             break;
         }
 
+        // Speed throttle: per-batch with drift cap
         uint32_t cps = 0;
         switch (_machine->get_speed()) {
             case dos_machine::SPEED_FULL:      cps = 0; break;
@@ -406,13 +409,21 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
         }
 
         if (cps > 0) {
-            unsigned long long elapsed_cycles = _machine->cycles - cycle_start;
+            unsigned long long elapsed_cycles = _machine->cycles - batch_cycle_start;
             uint64_t wall_now = mach_absolute_time();
-            uint64_t wall_elapsed_ns = (wall_now - wall_start) * timebase.numer / timebase.denom;
+            uint64_t wall_elapsed_ns = (wall_now - batch_wall_start) * timebase.numer / timebase.denom;
             uint64_t target_ns = (uint64_t)elapsed_cycles * 1000000000ULL / cps;
+
             if (target_ns > wall_elapsed_ns) {
                 uint64_t sleep_ns = target_ns - wall_elapsed_ns;
+                // Cap sleep to 50ms to stay responsive
+                if (sleep_ns > 50000000) sleep_ns = 50000000;
                 if (sleep_ns > 100000) usleep((unsigned)(sleep_ns / 1000));
+            } else if (wall_elapsed_ns - target_ns > 100000000) {
+                // If we've fallen >100ms behind, reset baseline instead of
+                // running full-speed to catch up (causes choppy bursts)
+                batch_wall_start = wall_now;
+                batch_cycle_start = _machine->cycles;
             }
         }
 
@@ -422,11 +433,14 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
                     [self->_io->delegate emulatorDidRequestInput];
                 });
             }
-            // Sleep 16ms (~60Hz) when idle at a prompt to avoid burning CPU
-            // with continuous video refresh dispatches to the main thread
-            [NSThread sleepForTimeInterval:0.016];
+            // At a DOS prompt: sleep 50ms (20 Hz) to save battery.
+            // Keys are queued asynchronously and processed on next wakeup.
+            [NSThread sleepForTimeInterval:0.050];
+            // Reset throttle baseline after idle sleep
+            batch_wall_start = mach_absolute_time();
+            batch_cycle_start = _machine->cycles;
         } else if (cps == 0) {
-            [NSThread sleepForTimeInterval:0.0001];
+            [NSThread sleepForTimeInterval:0.001];
         }
     }
 
