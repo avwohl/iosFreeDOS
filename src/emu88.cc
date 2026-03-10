@@ -186,6 +186,15 @@ emu88_uint16 emu88::default_segment(void) const {
 bool emu88::check_segment_read(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width) {
   if (exception_pending) return true;
   if (!protected_mode() || v86_mode()) {
+    // 286 real mode: fault on word/dword access crossing 64KB boundary
+    if (!lock_ud && width > 1) {
+      emu88_uint32 last_byte = (off & 0xFFFF) + (emu88_uint32)(width - 1);
+      if (last_byte > 0xFFFF) {
+        ip = insn_ip;
+        raise_exception(13, 0);
+        return false;
+      }
+    }
     return true;
   }
   for (int i = 0; i < 6; i++) {
@@ -206,6 +215,14 @@ bool emu88::check_segment_read(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 w
 bool emu88::check_segment_write(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width) {
   if (exception_pending) return true;
   if (!protected_mode() || v86_mode()) {
+    if (!lock_ud && width > 1) {
+      emu88_uint32 last_byte = (off & 0xFFFF) + (emu88_uint32)(width - 1);
+      if (last_byte > 0xFFFF) {
+        ip = insn_ip;
+        raise_exception(13, 0);
+        return false;
+      }
+    }
     return true;
   }
   for (int i = 0; i < 6; i++) {
@@ -312,11 +329,11 @@ emu88_uint16 emu88::pop_word(void) {
   if (stack_32()) {
     emu88_uint32 esp = get_esp();
     emu88_uint16 val = fetch_word(sregs[seg_SS], esp);
-    set_esp(esp + 2);
+    if (!exception_pending) set_esp(esp + 2);
     return val;
   } else {
     emu88_uint16 val = fetch_word(sregs[seg_SS], regs[reg_SP]);
-    regs[reg_SP] += 2;
+    if (!exception_pending) regs[reg_SP] += 2;
     return val;
   }
 }
@@ -343,11 +360,11 @@ emu88_uint32 emu88::pop_dword(void) {
   if (stack_32()) {
     emu88_uint32 esp = get_esp();
     emu88_uint32 val = fetch_dword(sregs[seg_SS], esp);
-    set_esp(esp + 4);
+    if (!exception_pending) set_esp(esp + 4);
     return val;
   } else {
     emu88_uint32 val = fetch_dword(sregs[seg_SS], regs[reg_SP]);
-    regs[reg_SP] += 4;
+    if (!exception_pending) regs[reg_SP] += 4;
     return val;
   }
 }
@@ -974,6 +991,7 @@ void emu88::execute_grp1_rm8(const modrm_result &mr, emu88_uint8 imm) {
 void emu88::execute_grp1_rm16(const modrm_result &mr, emu88_uint16 imm) {
   emu88_uint8 op = mr.reg_field;
   emu88_uint16 val = get_rm16(mr);
+  if (exception_pending) return;
   emu88_uint16 result = do_alu16(op, val, imm);
   if (op != 7)
     set_rm16(mr, result);
@@ -987,6 +1005,7 @@ void emu88::execute_grp2_rm8(const modrm_result &mr, emu88_uint8 count) {
 
 void emu88::execute_grp2_rm16(const modrm_result &mr, emu88_uint8 count) {
   emu88_uint16 val = get_rm16(mr);
+  if (exception_pending) return;
   emu88_uint16 result = do_shift16(mr.reg_field, val, count);
   set_rm16(mr, result);
 }
@@ -1084,6 +1103,7 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
 void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
   modrm_result mr = decode_modrm(modrm_byte);
   emu88_uint16 val = get_rm16(mr);
+  if (exception_pending) return;
   switch (mr.reg_field) {
   case 0: case 1: { // TEST r/m16, imm16
     emu88_uint16 imm = fetch_ip_word();
@@ -1194,6 +1214,7 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
   switch (mr.reg_field) {
   case 0: { // INC r/m16
     emu88_uint16 val = get_rm16(mr);
+    if (exception_pending) break;
     emu88_uint16 result = val + 1;
     set_flags_zsp16(result);
     set_flag_val(FLAG_AF, (val & 0x0F) == 0x0F);
@@ -1203,6 +1224,7 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
   }
   case 1: { // DEC r/m16
     emu88_uint16 val = get_rm16(mr);
+    if (exception_pending) break;
     emu88_uint16 result = val - 1;
     set_flags_zsp16(result);
     set_flag_val(FLAG_AF, (val & 0x0F) == 0x00);
@@ -1212,6 +1234,7 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
   }
   case 2: { // CALL r/m16 (near indirect)
     emu88_uint16 target = get_rm16(mr);
+    if (exception_pending) break;
     push_word(ip);
     ip = target;
     break;
@@ -1219,23 +1242,31 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
   case 3: { // CALL m16:16 (far indirect)
     if (mr.is_register) { raise_exception_no_error(6); break; }
     emu88_uint16 off = fetch_word(mr.seg, mr.offset);
+    if (exception_pending) break;
     emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 2);
+    if (exception_pending) break;
     far_call_or_jmp(seg, off, true);
     break;
   }
   case 4: { // JMP r/m16 (near indirect)
-    ip = get_rm16(mr);
+    emu88_uint16 target = get_rm16(mr);
+    if (exception_pending) break;
+    ip = target;
     break;
   }
   case 5: { // JMP m16:16 (far indirect)
     if (mr.is_register) { raise_exception_no_error(6); break; }
     emu88_uint16 off = fetch_word(mr.seg, mr.offset);
+    if (exception_pending) break;
     emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 2);
+    if (exception_pending) break;
     far_call_or_jmp(seg, off, false);
     break;
   }
   case 6: { // PUSH r/m16
-    push_word(get_rm16(mr));
+    emu88_uint16 val = get_rm16(mr);
+    if (exception_pending) break;
+    push_word(val);
     break;
   }
   default:
@@ -1251,12 +1282,14 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
 void emu88::execute_grp1_rm32(const modrm_result &mr, emu88_uint32 imm) {
   emu88_uint8 op = mr.reg_field;
   emu88_uint32 val = get_rm32(mr);
+  if (exception_pending) return;
   emu88_uint32 result = do_alu32(op, val, imm);
   if (op != 7) set_rm32(mr, result);
 }
 
 void emu88::execute_grp2_rm32(const modrm_result &mr, emu88_uint8 count) {
   emu88_uint32 val = get_rm32(mr);
+  if (exception_pending) return;
   emu88_uint32 result = do_shift32(mr.reg_field, val, count);
   set_rm32(mr, result);
 }
@@ -1264,6 +1297,7 @@ void emu88::execute_grp2_rm32(const modrm_result &mr, emu88_uint8 count) {
 void emu88::execute_grp3_rm32(emu88_uint8 modrm_byte) {
   modrm_result mr = decode_modrm(modrm_byte);
   emu88_uint32 val = get_rm32(mr);
+  if (exception_pending) return;
   switch (mr.reg_field) {
   case 0: case 1: { // TEST r/m32, imm32
     emu88_uint32 imm = fetch_ip_dword();
@@ -1326,39 +1360,49 @@ void emu88::execute_grp5_rm32(emu88_uint8 modrm_byte) {
   switch (mr.reg_field) {
   case 0: { // INC r/m32
     emu88_uint32 val = get_rm32(mr);
+    if (exception_pending) break;
     set_rm32(mr, alu_inc32(val));
     break;
   }
   case 1: { // DEC r/m32
     emu88_uint32 val = get_rm32(mr);
+    if (exception_pending) break;
     set_rm32(mr, alu_dec32(val));
     break;
   }
   case 2: { // CALL r/m32 (near indirect)
     emu88_uint32 target = get_rm32(mr);
+    if (exception_pending) break;
     push_dword(ip);
     ip = protected_mode() ? target : (target & 0xFFFF);
     break;
   }
   case 3: { // CALL m16:32 (far indirect)
     emu88_uint32 off = fetch_dword(mr.seg, mr.offset);
+    if (exception_pending) break;
     emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 4);
+    if (exception_pending) break;
     far_call_or_jmp(seg, off, true);
     break;
   }
   case 4: { // JMP r/m32 (near indirect)
     emu88_uint32 target = get_rm32(mr);
+    if (exception_pending) break;
     ip = protected_mode() ? target : (target & 0xFFFF);
     break;
   }
   case 5: { // JMP m16:32 (far indirect)
     emu88_uint32 off = fetch_dword(mr.seg, mr.offset);
+    if (exception_pending) break;
     emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 4);
+    if (exception_pending) break;
     far_call_or_jmp(seg, off, false);
     break;
   }
   case 6: { // PUSH r/m32
-    push_dword(get_rm32(mr));
+    emu88_uint32 val = get_rm32(mr);
+    if (exception_pending) break;
+    push_dword(val);
     break;
   }
   default:
@@ -1400,10 +1444,12 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
       if (op_size_32) {
         emu88_uint32 val = port_in16(regs[reg_DX]) | (emu88_uint32(port_in16(regs[reg_DX])) << 16);
         store_dword(sregs[seg_ES], get_di(), val);
+        if (exception_pending) break;
         add_di(dir * 4);
       } else {
         emu88_uint16 val = port_in(regs[reg_DX]) | ((emu88_uint16)port_in(regs[reg_DX]) << 8);
         store_word(sregs[seg_ES], get_di(), val);
+        if (exception_pending) break;
         add_di(dir * 2);
       }
       break;
@@ -1416,11 +1462,13 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
     case 0x6F: { // OUTSW / OUTSD (80186+)
       if (op_size_32) {
         emu88_uint32 val = fetch_dword(string_src_seg(), get_si());
+        if (exception_pending) break;
         port_out16(regs[reg_DX], val & 0xFFFF);
         port_out16(regs[reg_DX], (val >> 16) & 0xFFFF);
         add_si(dir * 4);
       } else {
         emu88_uint16 val = fetch_word(string_src_seg(), get_si());
+        if (exception_pending) break;
         port_out(regs[reg_DX], val & 0xFF);
         port_out(regs[reg_DX], (val >> 8) & 0xFF);
         add_si(dir * 2);
@@ -1728,11 +1776,13 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     if (op_size_32) {
       emu88_uint32 val = get_rm32(mr);
+      if (exception_pending) break;
       emu88_uint32 reg = get_reg32(mr.reg_field);
       emu88_uint32 result = do_alu32(op, val, reg);
       if (op != 7) set_rm32(mr, result);
     } else {
       emu88_uint16 val = get_rm16(mr);
+      if (exception_pending) break;
       emu88_uint16 reg = regs[mr.reg_field];
       emu88_uint16 result = do_alu16(op, val, reg);
       if (op != 7) set_rm16(mr, result);
@@ -1748,6 +1798,7 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     emu88_uint8 reg = get_reg8(mr.reg_field);
     emu88_uint8 val = get_rm8(mr);
+    if (exception_pending) break;
     emu88_uint8 result = do_alu8(op, reg, val);
     if (op != 7) set_reg8(mr.reg_field, result);
     break;
@@ -1762,11 +1813,13 @@ void emu88::execute(void) {
     if (op_size_32) {
       emu88_uint32 reg = get_reg32(mr.reg_field);
       emu88_uint32 val = get_rm32(mr);
+      if (exception_pending) break;
       emu88_uint32 result = do_alu32(op, reg, val);
       if (op != 7) set_reg32(mr.reg_field, result);
     } else {
       emu88_uint16 reg = regs[mr.reg_field];
       emu88_uint16 val = get_rm16(mr);
+      if (exception_pending) break;
       emu88_uint16 result = do_alu16(op, reg, val);
       if (op != 7) regs[mr.reg_field] = result;
     }
@@ -1807,9 +1860,9 @@ void emu88::execute(void) {
   case 0x1E: if (op_size_32) push_dword((emu88_uint32)sregs[seg_DS]); else push_word(sregs[seg_DS]); break;
 
   //--- POP segment ---
-  case 0x07: load_segment(seg_ES, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
-  case 0x17: load_segment(seg_SS, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
-  case 0x1F: load_segment(seg_DS, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
+  case 0x07: { emu88_uint16 v = op_size_32 ? (emu88_uint16)pop_dword() : pop_word(); if (!exception_pending) load_segment(seg_ES, v); break; }
+  case 0x17: { emu88_uint16 v = op_size_32 ? (emu88_uint16)pop_dword() : pop_word(); if (!exception_pending) load_segment(seg_SS, v); break; }
+  case 0x1F: { emu88_uint16 v = op_size_32 ? (emu88_uint16)pop_dword() : pop_word(); if (!exception_pending) load_segment(seg_DS, v); break; }
   // 0x0F: POP CS is not valid on 8088 (undefined behavior)
 
   //--- DAA ---
@@ -2081,8 +2134,15 @@ void emu88::execute(void) {
   case 0x85: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
-    if (op_size_32) set_flags_logic32(get_rm32(mr) & get_reg32(mr.reg_field));
-    else set_flags_logic16(get_rm16(mr) & regs[mr.reg_field]);
+    if (op_size_32) {
+      emu88_uint32 val = get_rm32(mr);
+      if (exception_pending) break;
+      set_flags_logic32(val & get_reg32(mr.reg_field));
+    } else {
+      emu88_uint16 val = get_rm16(mr);
+      if (exception_pending) break;
+      set_flags_logic16(val & regs[mr.reg_field]);
+    }
     break;
   }
 
@@ -2103,11 +2163,13 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     if (op_size_32) {
       emu88_uint32 a = get_rm32(mr);
+      if (exception_pending) break;
       emu88_uint32 b = get_reg32(mr.reg_field);
       set_rm32(mr, b);
       set_reg32(mr.reg_field, a);
     } else {
       emu88_uint16 a = get_rm16(mr);
+      if (exception_pending) break;
       emu88_uint16 b = regs[mr.reg_field];
       set_rm16(mr, b);
       regs[mr.reg_field] = a;
@@ -2144,8 +2206,15 @@ void emu88::execute(void) {
   case 0x8B: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
-    if (op_size_32) set_reg32(mr.reg_field, get_rm32(mr));
-    else regs[mr.reg_field] = get_rm16(mr);
+    if (op_size_32) {
+      emu88_uint32 val = get_rm32(mr);
+      if (exception_pending) break;
+      set_reg32(mr.reg_field, val);
+    } else {
+      emu88_uint16 val = get_rm16(mr);
+      if (exception_pending) break;
+      regs[mr.reg_field] = val;
+    }
     break;
   }
 
@@ -2154,6 +2223,7 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     int sreg_idx = mr.reg_field & 7;
+    if (!lock_ud && sreg_idx >= 4) { raise_exception_no_error(6); break; }
     if (sreg_idx >= 6) sreg_idx = 0;
     if (op_size_32 && mr.is_register) {
       set_reg32(mr.rm_field, (emu88_uint32)sregs[sreg_idx]);
@@ -2178,13 +2248,17 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     int sreg_idx = mr.reg_field & 7;
+    if (!lock_ud && sreg_idx >= 4) { raise_exception_no_error(6); break; }
     if (sreg_idx == seg_CS) {
       // MOV CS is invalid on 286+; raise #UD
       raise_exception_no_error(6);
       break;
     }
     if (sreg_idx >= 6) sreg_idx = 0;
-    load_segment(sreg_idx, get_rm16(mr));
+    { emu88_uint16 val = get_rm16(mr);
+      if (exception_pending) break;
+      load_segment(sreg_idx, val);
+    }
     break;
   }
 
@@ -2192,6 +2266,7 @@ void emu88::execute(void) {
   case 0x8F: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
+    if (mr.reg_field != 0) { raise_exception_no_error(6); break; }
     if (op_size_32) set_rm32(mr, pop_dword());
     else set_rm16(mr, pop_word());
     break;
@@ -2402,9 +2477,13 @@ void emu88::execute(void) {
   case 0xC2: {
     emu88_uint16 pop_count = fetch_ip_word();
     if (op_size_32) {
-      ip = pop_dword();
+      emu88_uint32 new_ip = pop_dword();
+      if (exception_pending) break;
+      ip = new_ip;
     } else {
-      ip = pop_word();
+      emu88_uint16 new_ip = pop_word();
+      if (exception_pending) break;
+      ip = new_ip;
     }
     if (stack_32()) set_esp(get_esp() + pop_count);
     else regs[reg_SP] += pop_count;
@@ -2414,9 +2493,13 @@ void emu88::execute(void) {
   //--- RET near ---
   case 0xC3:
     if (op_size_32) {
-      ip = pop_dword();
+      emu88_uint32 new_ip = pop_dword();
+      if (exception_pending) break;
+      ip = new_ip;
     } else {
-      ip = pop_word();
+      emu88_uint16 new_ip = pop_word();
+      if (exception_pending) break;
+      ip = new_ip;
     }
     break;
 
@@ -2426,11 +2509,19 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     if (mr.is_register) { raise_exception_no_error(6); break; }
     if (op_size_32) {
-      set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-      load_segment(seg_ES, fetch_word(mr.seg, mr.offset + 4));
+      emu88_uint32 off_val = fetch_dword(mr.seg, mr.offset);
+      if (exception_pending) break;
+      emu88_uint16 seg_val = fetch_word(mr.seg, mr.offset + 4);
+      if (exception_pending) break;
+      set_reg32(mr.reg_field, off_val);
+      load_segment(seg_ES, seg_val);
     } else {
-      regs[mr.reg_field] = fetch_word(mr.seg, mr.offset);
-      load_segment(seg_ES, fetch_word(mr.seg, mr.offset + 2));
+      emu88_uint16 off_val = fetch_word(mr.seg, mr.offset);
+      if (exception_pending) break;
+      emu88_uint16 seg_val = fetch_word(mr.seg, mr.offset + 2);
+      if (exception_pending) break;
+      regs[mr.reg_field] = off_val;
+      load_segment(seg_ES, seg_val);
     }
     break;
   }
@@ -2441,11 +2532,19 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     if (mr.is_register) { raise_exception_no_error(6); break; }
     if (op_size_32) {
-      set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-      load_segment(seg_DS, fetch_word(mr.seg, mr.offset + 4));
+      emu88_uint32 off_val = fetch_dword(mr.seg, mr.offset);
+      if (exception_pending) break;
+      emu88_uint16 seg_val = fetch_word(mr.seg, mr.offset + 4);
+      if (exception_pending) break;
+      set_reg32(mr.reg_field, off_val);
+      load_segment(seg_DS, seg_val);
     } else {
-      regs[mr.reg_field] = fetch_word(mr.seg, mr.offset);
-      load_segment(seg_DS, fetch_word(mr.seg, mr.offset + 2));
+      emu88_uint16 off_val = fetch_word(mr.seg, mr.offset);
+      if (exception_pending) break;
+      emu88_uint16 seg_val = fetch_word(mr.seg, mr.offset + 2);
+      if (exception_pending) break;
+      regs[mr.reg_field] = off_val;
+      load_segment(seg_DS, seg_val);
     }
     break;
   }
@@ -2474,7 +2573,9 @@ void emu88::execute(void) {
     emu88_uint16 pop_count = fetch_ip_word();
     if (op_size_32) {
       emu88_uint32 new_eip = pop_dword();
+      if (exception_pending) break;
       emu88_uint16 new_cs = pop_dword() & 0xFFFF;
+      if (exception_pending) break;
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
         // Inter-privilege return: pop ESP and SS
@@ -2498,7 +2599,9 @@ void emu88::execute(void) {
       }
     } else {
       emu88_uint16 new_ip = pop_word();
+      if (exception_pending) break;
       emu88_uint16 new_cs = pop_word();
+      if (exception_pending) break;
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
         if (stack_32()) set_esp(get_esp() + pop_count);
@@ -2527,7 +2630,9 @@ void emu88::execute(void) {
   case 0xCB:
     if (op_size_32) {
       emu88_uint32 new_eip = pop_dword();
+      if (exception_pending) break;
       emu88_uint16 new_cs = pop_dword() & 0xFFFF;
+      if (exception_pending) break;
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
         emu88_uint32 new_esp = pop_dword();
@@ -2546,7 +2651,9 @@ void emu88::execute(void) {
       }
     } else {
       emu88_uint16 new_ip = pop_word();
+      if (exception_pending) break;
       emu88_uint16 new_cs = pop_word();
+      if (exception_pending) break;
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
         emu88_uint16 new_sp = pop_word();
@@ -2805,9 +2912,13 @@ void emu88::execute(void) {
       raise_exception_no_error(7);
       break;
     }
-    // No FPU - just consume the modrm byte and any displacement
+    // No FPU - consume modrm/displacement, but still touch memory for segment checks
     emu88_uint8 modrm = fetch_ip_byte();
-    decode_modrm(modrm);  // consume displacement bytes
+    modrm_result mr = decode_modrm(modrm);
+    if (!mr.is_register) {
+      // Access the memory operand to trigger segment boundary checks (word access)
+      fetch_word(mr.seg, mr.offset);
+    }
     break;
   }
 
@@ -3112,23 +3223,25 @@ void emu88::execute(void) {
   //--- POPA / POPAD (80186+) ---
   case 0x61: {
     if (op_size_32) {
-      set_reg32(reg_DI, pop_dword());
-      set_reg32(reg_SI, pop_dword());
-      set_reg32(reg_BP, pop_dword());
-      pop_dword();  // skip ESP
-      set_reg32(reg_BX, pop_dword());
-      set_reg32(reg_DX, pop_dword());
-      set_reg32(reg_CX, pop_dword());
-      set_reg32(reg_AX, pop_dword());
+      emu88_uint32 v;
+      v = pop_dword(); if (exception_pending) break; set_reg32(reg_DI, v);
+      v = pop_dword(); if (exception_pending) break; set_reg32(reg_SI, v);
+      v = pop_dword(); if (exception_pending) break; set_reg32(reg_BP, v);
+      pop_dword(); if (exception_pending) break;
+      v = pop_dword(); if (exception_pending) break; set_reg32(reg_BX, v);
+      v = pop_dword(); if (exception_pending) break; set_reg32(reg_DX, v);
+      v = pop_dword(); if (exception_pending) break; set_reg32(reg_CX, v);
+      v = pop_dword(); set_reg32(reg_AX, v);
     } else {
-      regs[reg_DI] = pop_word();
-      regs[reg_SI] = pop_word();
-      regs[reg_BP] = pop_word();
-      pop_word();  // skip SP
-      regs[reg_BX] = pop_word();
-      regs[reg_DX] = pop_word();
-      regs[reg_CX] = pop_word();
-      regs[reg_AX] = pop_word();
+      emu88_uint16 v;
+      v = pop_word(); if (exception_pending) break; regs[reg_DI] = v;
+      v = pop_word(); if (exception_pending) break; regs[reg_SI] = v;
+      v = pop_word(); if (exception_pending) break; regs[reg_BP] = v;
+      pop_word(); if (exception_pending) break;
+      v = pop_word(); if (exception_pending) break; regs[reg_BX] = v;
+      v = pop_word(); if (exception_pending) break; regs[reg_DX] = v;
+      v = pop_word(); if (exception_pending) break; regs[reg_CX] = v;
+      v = pop_word(); regs[reg_AX] = v;
     }
     break;
   }
@@ -3141,12 +3254,16 @@ void emu88::execute(void) {
     if (op_size_32) {
       emu88_int32 idx = (emu88_int32)get_reg32(mr.reg_field);
       emu88_int32 lo = (emu88_int32)fetch_dword(mr.seg, mr.offset);
+      if (exception_pending) break;
       emu88_int32 hi = (emu88_int32)fetch_dword(mr.seg, mr.offset + 4);
+      if (exception_pending) break;
       if (idx < lo || idx > hi) raise_exception_no_error(5);
     } else {
       emu88_int16 idx = (emu88_int16)regs[mr.reg_field];
       emu88_int16 lo = (emu88_int16)fetch_word(mr.seg, mr.offset);
+      if (exception_pending) break;
       emu88_int16 hi = (emu88_int16)fetch_word(mr.seg, mr.offset + 2);
+      if (exception_pending) break;
       if (idx < lo || idx > hi) raise_exception_no_error(5);
     }
     break;
@@ -3298,18 +3415,29 @@ void emu88::execute(void) {
   }
 
   //--- LEAVE (80186+) ---
-  case 0xC9:
+  case 0xC9: {
     // SP/ESP ← BP/EBP depends on stack address size (B bit), not operand size
-    if (stack_32())
+    // Pre-check: if the POP would fault (286 segment boundary), raise exception
+    // before modifying SP so the fault frame uses the original SP.
+    if (!stack_32()) {
+      emu88_uint16 new_sp = regs[reg_BP];
+      emu88_uint8 pop_width = op_size_32 ? 4 : 2;
+      if (!lock_ud && pop_width > 1 && (new_sp & 0xFFFF) + (pop_width - 1) > 0xFFFF) {
+        ip = insn_ip;
+        raise_exception(13, 0);
+        break;
+      }
+      regs[reg_SP] = new_sp;
+    } else {
       set_esp(get_reg32(reg_BP));
-    else
-      regs[reg_SP] = regs[reg_BP];
+    }
     // Pop BP/EBP depends on operand size
     if (op_size_32)
       set_reg32(reg_BP, pop_dword());
     else
       regs[reg_BP] = pop_word();
     break;
+  }
 
   //--- 0x0F two-byte opcode prefix (286+) ---
   case 0x0F: {
