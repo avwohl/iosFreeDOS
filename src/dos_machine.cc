@@ -71,6 +71,8 @@ uint32_t dos_machine::bda_r32(int off) {
 
 void dos_machine::configure(const Config &cfg) {
   config = cfg;
+  cpu_type = cfg.cpu;
+  lock_ud = (cfg.cpu >= CPU_386);
   set_speed(cfg.speed);
 }
 

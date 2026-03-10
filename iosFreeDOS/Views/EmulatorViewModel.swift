@@ -203,6 +203,7 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
             let emu = DOSEmulator()
 
             // Apply machine config
+            emu.setCpuType(DOSCpuType(rawValue: cfg.cpuType) ?? .i386)
             emu.setDisplayAdapter(DOSDisplayAdapter(rawValue: cfg.displayAdapter) ?? .cga)
             emu.setMouseEnabled(cfg.mouseEnabled)
             emu.setSpeakerEnabled(cfg.speakerEnabled)

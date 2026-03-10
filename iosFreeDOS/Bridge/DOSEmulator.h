@@ -16,6 +16,13 @@ typedef NS_ENUM(NSInteger, DOSDisplayAdapter) {
     DOSDisplayVGA NS_SWIFT_NAME(vga) = 5
 };
 
+// CPU type
+typedef NS_ENUM(NSInteger, DOSCpuType) {
+    DOSCpu8088 NS_SWIFT_NAME(i8088) = 0,
+    DOSCpu286 NS_SWIFT_NAME(i286) = 1,
+    DOSCpu386 NS_SWIFT_NAME(i386) = 2
+};
+
 // Speed modes
 typedef NS_ENUM(NSInteger, DOSSpeedMode) {
     DOSSpeedFull NS_SWIFT_NAME(full) = 0,
@@ -52,6 +59,7 @@ typedef NS_ENUM(NSInteger, DOSControlifyMode) {
 - (instancetype)init;
 
 // Configuration (call before start)
+- (void)setCpuType:(DOSCpuType)type;
 - (void)setDisplayAdapter:(DOSDisplayAdapter)adapter;
 - (void)setMouseEnabled:(BOOL)enabled;
 - (void)setSpeakerEnabled:(BOOL)enabled;

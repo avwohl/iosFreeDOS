@@ -9,6 +9,7 @@ struct MachineConfig: Codable, Identifiable, Equatable {
     var name: String = "Default"
 
     // CPU
+    var cpuType: Int = 2    // 0=8088, 1=286, 2=386
     var speedMode: Int = 1  // 0=full, 1=PC 4.77, 2=AT 8, 3=386SX-16, 4=386DX-33, 5=486DX2-66
 
     // Display
@@ -28,6 +29,15 @@ struct MachineConfig: Codable, Identifiable, Equatable {
     var bootDrive: Int = 0  // 0=A, 0x80=C, 0xE0=CD-ROM
 
     // Helpers
+    var cpuLabel: String {
+        switch cpuType {
+        case 0: return "8088"
+        case 1: return "286"
+        case 2: return "386"
+        default: return "Unknown"
+        }
+    }
+
     var speedLabel: String {
         switch speedMode {
         case 0: return "Full Speed"

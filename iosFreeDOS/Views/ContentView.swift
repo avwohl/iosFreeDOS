@@ -284,6 +284,19 @@ struct ContentView: View {
                 }
             ))
 
+            Picker("CPU", selection: Binding(
+                get: { viewModel.config.cpuType },
+                set: { val in
+                    var cfg = viewModel.config
+                    cfg.cpuType = val
+                    viewModel.configManager.updateConfig(cfg)
+                }
+            )) {
+                Text("8088").tag(0)
+                Text("286").tag(1)
+                Text("386").tag(2)
+            }
+
             Picker("CPU Speed", selection: Binding(
                 get: { viewModel.config.speedMode },
                 set: { val in

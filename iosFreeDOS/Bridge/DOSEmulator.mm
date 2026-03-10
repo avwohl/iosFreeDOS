@@ -352,6 +352,14 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
 - (void)dealloc { [self stop]; }
 
 // Configuration
+- (void)setCpuType:(DOSCpuType)type {
+    switch (type) {
+        case DOSCpu8088: _config.cpu = emu88::CPU_8088; break;
+        case DOSCpu286:  _config.cpu = emu88::CPU_286; break;
+        case DOSCpu386:  _config.cpu = emu88::CPU_386; break;
+    }
+}
+
 - (void)setDisplayAdapter:(DOSDisplayAdapter)adapter {
     _config.display = static_cast<dos_machine::DisplayAdapter>(adapter);
 }
@@ -424,7 +432,18 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
     _io->delegate = self.delegate;
     _io->has_mouse = _config.mouse_enabled;
 
-    _mem = std::make_unique<emu88_mem>(0x1000000);
+    // Scale physical RAM by CPU type:
+    //   8088: 1MB (real mode only)
+    //   286:  16MB (24-bit address bus)
+    //   386:  64MB (practical DOS limit)
+    uint32_t ram_size;
+    switch (_config.cpu) {
+        case emu88::CPU_8088:
+        case emu88::CPU_186:  ram_size = 0x100000;   break;  // 1MB
+        case emu88::CPU_286:  ram_size = 0x1000000;  break;  // 16MB
+        default:              ram_size = 0x4000000;  break;  // 64MB
+    }
+    _mem = std::make_unique<emu88_mem>(ram_size);
     _machine = std::make_unique<dos_machine>(_mem.get(), _io.get());
     _machine->configure(_config);
 

@@ -73,6 +73,7 @@ public:
 
   // Machine configuration
   struct Config {
+    CpuType cpu = CPU_386;
     DisplayAdapter display = DISPLAY_CGA;
     SpeedMode speed = SPEED_PC_4_77;
     bool mouse_enabled = true;
