@@ -38,10 +38,10 @@ jobs:
         run: |
           mkdir -p fd
           echo "Downloading FreeDOS 1.4 LiveCD..."
-          curl -L -o fd/FD14LIVE.iso \
+          curl -L --retry 3 --connect-timeout 30 --retry-delay 10 -o fd/FD14LIVE.iso \
             https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14LIVE.iso
           echo "Downloading FreeDOS 1.4 Bonus CD..."
-          curl -L -o fd/FD14BNS.iso \
+          curl -L --retry 3 --connect-timeout 30 --retry-delay 10 -o fd/FD14BNS.iso \
             https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BNS.iso
           ls -lh fd/*.iso
 
