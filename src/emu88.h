@@ -145,6 +145,9 @@ public:
   enum RepType { REP_NONE, REP_REPZ, REP_REPNZ };
   RepType rep_prefix;
 
+  // CPU behavior flags
+  bool lock_ud;           // true = LOCK on invalid opcode causes #UD (386+)
+
   // 386 operand/address size prefix state (per-instruction)
   bool op_size_32;        // true when 32-bit operands active
   bool addr_size_32;      // true when 32-bit addressing active
