@@ -1,4 +1,5 @@
 #include "emu88.h"
+#include "test_8088_sst.h"
 #include <cstdio>
 #include <cstring>
 
@@ -2287,6 +2288,12 @@ int main() {
   test_386_stosd();
   test_386_movsd();
 
-  printf("\nResults: %d passed, %d failed\n", tests_passed, tests_failed);
-  return tests_failed > 0 ? 1 : 0;
+  fprintf(stderr, "Unit tests: %d passed, %d failed\n", tests_passed, tests_failed);
+
+  // 8088 SingleStepTests (auto-downloads on first run)
+  int sst_fail = run_8088_sst_tests();
+
+  fprintf(stderr, "\nUnit tests: %d passed, %d failed\n", tests_passed, tests_failed);
+  fprintf(stderr, "8088 SST:   %d failures\n", sst_fail > 0 ? sst_fail : 0);
+  return (tests_failed > 0 || sst_fail > 0) ? 1 : 0;
 }
