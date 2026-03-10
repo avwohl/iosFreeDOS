@@ -2132,7 +2132,7 @@ static void test_386_movsd() {
   check(cpu.regs[emu88::reg_DI] == 0x2004, "MOVSD: DI += 4");
 }
 
-int main() {
+int main(int argc, char* argv[]) {
   printf("Running 8088 emulator tests...\n\n");
 
   // Original tests
@@ -2291,7 +2291,8 @@ int main() {
   fprintf(stderr, "Unit tests: %d passed, %d failed\n", tests_passed, tests_failed);
 
   // 8088 SingleStepTests (auto-downloads on first run)
-  int sst_fail = run_8088_sst_tests();
+  const char* sst_filter = (argc >= 2) ? argv[1] : nullptr;
+  int sst_fail = run_8088_sst_tests(sst_filter);
 
   fprintf(stderr, "\nUnit tests: %d passed, %d failed\n", tests_passed, tests_failed);
   fprintf(stderr, "8088 SST:   %d failures\n", sst_fail > 0 ? sst_fail : 0);

@@ -147,6 +147,8 @@ public:
 
   // CPU behavior flags
   bool lock_ud;           // true = LOCK on invalid opcode causes #UD (386+)
+  enum CpuType { CPU_8088, CPU_186, CPU_286, CPU_386 };
+  CpuType cpu_type;       // Selects instruction set and quirks
 
   // 386 operand/address size prefix state (per-instruction)
   bool op_size_32;        // true when 32-bit operands active

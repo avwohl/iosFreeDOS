@@ -76,6 +76,7 @@ void emu88::reset(void) {
   op_size_32 = false;
   addr_size_32 = false;
   lock_ud = true;  // 386 behavior by default
+  cpu_type = CPU_386;
   gdtr_base = 0; gdtr_limit = 0;
   idtr_base = 0; idtr_limit = 0x3FF;
   cr0 = 0; cr2 = 0; cr3 = 0; cr4 = 0;
@@ -296,6 +297,7 @@ void emu88::store_dword(emu88_uint16 seg, emu88_uint32 off, emu88_uint32 val) {
 emu88_uint8 emu88::fetch_ip_byte(void) {
   emu88_uint8 val = fetch_byte(sregs[seg_CS], ip);
   ip++;
+  if (!protected_mode()) ip &= 0xFFFF;
   return val;
 }
 
@@ -750,7 +752,7 @@ emu88_uint32 emu88::do_alu32(emu88_uint8 op, emu88_uint32 a, emu88_uint32 b) {
 //=============================================================================
 
 emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count) {
-  count &= 31;  // 286+ masks shift count to 5 bits
+  if (cpu_type >= CPU_286) count &= 31;  // 286+ masks shift count to 5 bits
   if (count == 0) return val;
   emu88_uint8 result = val;
   emu88_uint8 cf;
@@ -788,9 +790,14 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
       result >>= 1;
       set_flag_val(FLAG_CF, cf);
       break;
-    case 6: // (undefined, acts like SHL on 8088)
-      cf = (result >> 7) & 1;
-      result <<= 1;
+    case 6: // SETMO on 8088 (set minus one), SHL alias on 286+
+      if (cpu_type == CPU_8088) {
+        cf = 0;  // SETMO: CF always 0
+        result = 0xFF;
+      } else {
+        cf = (result >> 7) & 1;
+        result <<= 1;
+      }
       set_flag_val(FLAG_CF, cf);
       break;
     case 7: // SAR
@@ -803,8 +810,14 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
   if (count == 1 || !lock_ud) {
     // Single-bit: all CPUs compute OF. Multi-bit: 286 computes, 386 leaves undefined.
     switch (op) {
-    case 0: case 2: case 4: case 6: // left shifts/rotates
+    case 0: case 2: case 4: // left shifts/rotates
       set_flag_val(FLAG_OF, ((result >> 7) & 1) != get_flag(FLAG_CF));
+      break;
+    case 6: // SHL alias (286+), SETMO (8088)
+      if (cpu_type == CPU_8088)
+        clear_flag(FLAG_OF);  // SETMO: OF always 0
+      else
+        set_flag_val(FLAG_OF, ((result >> 7) & 1) != get_flag(FLAG_CF));
       break;
     case 1: case 3: // right rotates
       set_flag_val(FLAG_OF, ((result >> 7) ^ ((result >> 6) & 1)) != 0);
@@ -819,7 +832,10 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
   }
   if (op >= 4) {
     set_flags_zsp8(result);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088 && op >= 5) {
+      // 8088: SHR/SETMO/SAR clear AF; SHL keeps AF from set_flags
+      clear_flag(FLAG_AF);
+    } else if (!lock_ud) {
       // 286: SHL sets AF from result bit 4; SHR/SAR always set AF
       if (op == 4 || op == 6) set_flag_val(FLAG_AF, result & 0x10);
       else set_flag(FLAG_AF);
@@ -829,7 +845,7 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
 }
 
 emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 count) {
-  count &= 31;  // 286+ masks shift count to 5 bits
+  if (cpu_type >= CPU_286) count &= 31;  // 286+ masks shift count to 5 bits
   if (count == 0) return val;
   emu88_uint16 result = val;
   emu88_uint8 cf;
@@ -867,9 +883,14 @@ emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 cou
       result >>= 1;
       set_flag_val(FLAG_CF, cf);
       break;
-    case 6: // (undefined)
-      cf = (result >> 15) & 1;
-      result <<= 1;
+    case 6: // SETMO on 8088, SHL alias on 286+
+      if (cpu_type == CPU_8088) {
+        cf = 0;
+        result = 0xFFFF;
+      } else {
+        cf = (result >> 15) & 1;
+        result <<= 1;
+      }
       set_flag_val(FLAG_CF, cf);
       break;
     case 7: // SAR
@@ -881,8 +902,14 @@ emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 cou
   }
   if (count == 1 || !lock_ud) {
     switch (op) {
-    case 0: case 2: case 4: case 6:
+    case 0: case 2: case 4:
       set_flag_val(FLAG_OF, ((result >> 15) & 1) != get_flag(FLAG_CF));
+      break;
+    case 6:
+      if (cpu_type == CPU_8088)
+        clear_flag(FLAG_OF);
+      else
+        set_flag_val(FLAG_OF, ((result >> 15) & 1) != get_flag(FLAG_CF));
       break;
     case 1: case 3:
       set_flag_val(FLAG_OF, ((result >> 15) ^ ((result >> 14) & 1)) != 0);
@@ -897,7 +924,9 @@ emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 cou
   }
   if (op >= 4) {
     set_flags_zsp16(result);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088 && op >= 5) {
+      clear_flag(FLAG_AF);
+    } else if (!lock_ud) {
       if (op == 4 || op == 6) set_flag_val(FLAG_AF, result & 0x10);
       else set_flag(FLAG_AF);
     }
@@ -1036,11 +1065,14 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     bool of_cf = (result & 0xFF00) != 0;
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088) {
+      set_flags_zsp8((result >> 8) & 0xFF);
+      clear_flag(FLAG_AF);
+    } else if (!lock_ud) {
       set_flags_zsp8((result >> 8) & 0xFF);
       set_flag(FLAG_AF);
     }
-    cycles += 54;  // 70 total - 16 from base
+    cycles += 54;
     break;
   }
   case 5: { // IMUL r/m8 (80-98 cycles)
@@ -1049,11 +1081,21 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     bool of_cf = (result < -128 || result > 127);
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088) {
+      // 8088 IMULCOF microcode: ZERO->tmpB, LRCY tmpC, ADC tmpA, F
+      // Flags come from: AH + sign_bit(AL)  (the sign-extension check)
+      {
+        emu88_uint8 ah = (emu88_uint16(result) >> 8) & 0xFF;
+        emu88_uint8 al_sign = (emu88_uint16(result) >> 7) & 1;
+        emu88_uint8 imulcof = (ah + al_sign) & 0xFF;
+        set_flags_zsp8(imulcof);
+        set_flag_val(FLAG_AF, (ah & 0xF) + al_sign > 0xF);
+      }
+    } else if (!lock_ud) {
       set_flags_zsp8((emu88_uint16(result) >> 8) & 0xFF);
       set_flag(FLAG_AF);
     }
-    cycles += 64;  // 80 total
+    cycles += 64;
     break;
   }
   case 6: { // DIV r/m8 (80-90 cycles)
@@ -1072,9 +1114,10 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     set_reg8(reg_AH, remainder);
     if (!lock_ud) {
       set_flags_zsp8(remainder);
-      set_flag(FLAG_AF);
+      if (cpu_type == CPU_8088) clear_flag(FLAG_AF);
+      else set_flag(FLAG_AF);
     }
-    cycles += 64;  // 80 total
+    cycles += 64;
     break;
   }
   case 7: { // IDIV r/m8 (101-112 cycles)
@@ -1094,9 +1137,10 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     set_reg8(reg_AH, emu88_uint8(remainder));
     if (!lock_ud) {
       set_flags_zsp8(emu88_uint8(remainder));
-      set_flag(FLAG_AF);
+      if (cpu_type == CPU_8088) clear_flag(FLAG_AF);
+      else set_flag(FLAG_AF);
     }
-    cycles += 85;  // 101 total
+    cycles += 85;
     break;
   }
   }
@@ -1129,11 +1173,14 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     bool of_cf = regs[reg_DX] != 0;
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088) {
+      set_flags_zsp16(regs[reg_DX]);
+      clear_flag(FLAG_AF);
+    } else if (!lock_ud) {
       set_flags_zsp16(regs[reg_DX]);
       set_flag(FLAG_AF);
     }
-    cycles += 105;  // 118 total approx
+    cycles += 105;
     break;
   }
   case 5: { // IMUL r/m16 (128-154 cycles)
@@ -1143,11 +1190,17 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     bool of_cf = (result < -32768 || result > 32767);
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088) {
+      // 8088 IMULCOF microcode: flags from DX + sign_bit(AX)
+      emu88_uint16 ax_sign = (regs[reg_AX] >> 15) & 1;
+      emu88_uint16 imulcof = regs[reg_DX] + ax_sign;
+      set_flags_zsp16(imulcof);
+      set_flag_val(FLAG_AF, (regs[reg_DX] & 0xF) + ax_sign > 0xF);
+    } else if (!lock_ud) {
       set_flags_zsp16(regs[reg_DX]);
       set_flag(FLAG_AF);
     }
-    cycles += 118;  // 128 total approx
+    cycles += 118;
     break;
   }
   case 6: { // DIV r/m16 (144-162 cycles)
@@ -1168,7 +1221,7 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
       set_flags_zsp16(remainder);
       set_flag(FLAG_AF);
     }
-    cycles += 130;  // 144 total approx
+    cycles += 130;
     break;
   }
   case 7: { // IDIV r/m16 (165-184 cycles)
@@ -1190,7 +1243,7 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
       set_flags_zsp16(emu88_uint16(remainder));
       set_flag(FLAG_AF);
     }
-    cycles += 150;  // 165 total approx
+    cycles += 150;
     break;
   }
   }
@@ -1266,10 +1319,17 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
     far_call_or_jmp(seg, off, false);
     break;
   }
-  case 6: { // PUSH r/m16
+  case 6: // PUSH r/m16
+  case 7: { // PUSH r/m16 (undocumented alias, 8088)
     emu88_uint16 val = get_rm16(mr);
     if (exception_pending) break;
-    push_word(val);
+    if (cpu_type == CPU_8088 && mr.is_register && mr.rm_field == reg_SP) {
+      // 8088: PUSH SP via GRP5 pushes SP-2
+      regs[reg_SP] -= 2;
+      store_word(sregs[seg_SS], regs[reg_SP], regs[reg_SP]);
+    } else {
+      push_word(val);
+    }
     break;
   }
   default:
@@ -1861,15 +1921,28 @@ void emu88::execute(void) {
     case 0x2E: seg_override = seg_CS; ip++; prefix_count++; break;
     case 0x36: seg_override = seg_SS; ip++; prefix_count++; break;
     case 0x3E: seg_override = seg_DS; ip++; prefix_count++; break;
-    case 0x64: seg_override = seg_FS; ip++; prefix_count++; break;
-    case 0x65: seg_override = seg_GS; ip++; prefix_count++; break;
-    case 0x66: op_size_32 = !op_size_32; ip++; prefix_count++; break;   // toggle operand size
-    case 0x67: addr_size_32 = !addr_size_32; ip++; prefix_count++; break; // toggle address size
+    case 0x64:
+      if (cpu_type >= CPU_386) { seg_override = seg_FS; ip++; prefix_count++; }
+      else prefix_done = true;
+      break;
+    case 0x65:
+      if (cpu_type >= CPU_386) { seg_override = seg_GS; ip++; prefix_count++; }
+      else prefix_done = true;
+      break;
+    case 0x66:
+      if (cpu_type >= CPU_386) { op_size_32 = !op_size_32; ip++; prefix_count++; }
+      else prefix_done = true;
+      break;
+    case 0x67:
+      if (cpu_type >= CPU_386) { addr_size_32 = !addr_size_32; ip++; prefix_count++; }
+      else prefix_done = true;
+      break;
     case 0xF0: lock_prefix = true; ip++; prefix_count++; break;  // LOCK prefix
     case 0xF2: rep_prefix = REP_REPNZ; ip++; prefix_count++; break;
     case 0xF3: rep_prefix = REP_REPZ; ip++; prefix_count++; break;
     default: prefix_done = true; break;
     }
+    if (!prefix_done && !protected_mode()) ip &= 0xFFFF;
   }
 
   // Save prefix count for 286 instruction length check
@@ -1901,10 +1974,20 @@ void emu88::execute(void) {
       lock_valid = true; // Will validate on actual 0F opcode if needed
       break;
     }
-    if (!lock_valid && lock_ud) {
-      raise_exception_no_error(6);  // #UD (386+ only)
+    if (!lock_valid && lock_ud && cpu_type >= CPU_286) {
+      raise_exception_no_error(6);  // #UD (286+ only)
       return;
     }
+  }
+
+  // 8088: remap undefined opcodes to their hardware aliases
+  if (cpu_type == CPU_8088) {
+    if (opcode >= 0x60 && opcode <= 0x6F)
+      opcode = (opcode & 0x0F) | 0x70;  // 0x60-0x6F → Jcc (aliases for 0x70-0x7F)
+    else if (opcode == 0xC0) opcode = 0xC2;  // RET near imm16
+    else if (opcode == 0xC1) opcode = 0xC3;  // RET near
+    else if (opcode == 0xC8) opcode = 0xCA;  // RET far imm16
+    else if (opcode == 0xC9) opcode = 0xCB;  // RET far
   }
 
   switch (opcode) {
@@ -2023,21 +2106,30 @@ void emu88::execute(void) {
     emu88_uint8 al = get_reg8(reg_AL);
     emu88_uint8 old_al = al;
     bool old_cf = get_flag(FLAG_CF);
+    bool step1 = false, step2 = false;
     clear_flag(FLAG_CF);
     if ((al & 0x0F) > 9 || get_flag(FLAG_AF)) {
       al += 6;
       set_flag_val(FLAG_CF, old_cf || (al < old_al));
       set_flag(FLAG_AF);
+      step1 = true;
     } else {
       clear_flag(FLAG_AF);
     }
+    emu88_uint8 al_step1 = al;  // AL after step1, before step2
     if (old_al > 0x99 || old_cf) {
       al += 0x60;
       set_flag(FLAG_CF);
+      step2 = true;
     }
     set_reg8(reg_AL, al);
     set_flags_zsp8(al);
-    if (!lock_ud) clear_flag(FLAG_OF);
+    if (cpu_type == CPU_8088) {
+      // 8088: OF = signed overflow from either internal ADD (OR'd)
+      bool of1 = step1 && (old_al >= 0x7A && old_al <= 0x7F);
+      bool of2 = step2 && (al_step1 >= 0x20 && al_step1 <= 0x7F);
+      set_flag_val(FLAG_OF, of1 || of2);
+    } else if (!lock_ud) clear_flag(FLAG_OF);
     break;
   }
 
@@ -2046,21 +2138,34 @@ void emu88::execute(void) {
     emu88_uint8 al = get_reg8(reg_AL);
     emu88_uint8 old_al = al;
     bool old_cf = get_flag(FLAG_CF);
+    bool step1 = false, step2 = false;
     clear_flag(FLAG_CF);
     if ((al & 0x0F) > 9 || get_flag(FLAG_AF)) {
       al -= 6;
-      set_flag_val(FLAG_CF, old_cf || (old_al < 6));
+      // 8088: CF not set from borrow in step1 (only step2 sets CF)
+      if (cpu_type == CPU_8088)
+        set_flag_val(FLAG_CF, old_cf);
+      else
+        set_flag_val(FLAG_CF, old_cf || (old_al < 6));
       set_flag(FLAG_AF);
+      step1 = true;
     } else {
       clear_flag(FLAG_AF);
     }
+    emu88_uint8 al_step1 = al;  // AL after step1, before step2
     if (old_al > 0x99 || old_cf) {
       al -= 0x60;
       set_flag(FLAG_CF);
+      step2 = true;
     }
     set_reg8(reg_AL, al);
     set_flags_zsp8(al);
-    if (!lock_ud) clear_flag(FLAG_OF);
+    if (cpu_type == CPU_8088) {
+      // 8088: OF = signed overflow from either internal SUB (OR'd)
+      bool of1 = step1 && (old_al >= 0x80 && old_al <= 0x85);
+      bool of2 = step2 && (al_step1 >= 0x80 && al_step1 <= 0xDF);
+      set_flag_val(FLAG_OF, of1 || of2);
+    } else if (!lock_ud) clear_flag(FLAG_OF);
     break;
   }
 
@@ -2068,19 +2173,31 @@ void emu88::execute(void) {
   case 0x37: {
     emu88_uint8 al = get_reg8(reg_AL);
     if ((al & 0x0F) > 9 || get_flag(FLAG_AF)) {
-      emu88_uint16 ax = regs[reg_AX] + 0x106;
-      regs[reg_AX] = (ax & 0xFF0F);
+      if (cpu_type == CPU_8088) {
+        // 8088: separate AL+6 and AH+1 (no carry from AL to AH)
+        emu88_uint8 new_al = al + 6;
+        set_flags_zsp8(new_al);
+        set_flag_val(FLAG_OF, al >= 0x7A && al <= 0x7F);  // signed overflow of al+6
+        set_reg8(reg_AL, new_al & 0x0F);
+        set_reg8(reg_AH, get_reg8(reg_AH) + 1);
+      } else {
+        emu88_uint16 ax = regs[reg_AX] + 0x106;
+        regs[reg_AX] = (ax & 0xFF0F);
+        if (!lock_ud) {
+          set_flags_zsp8(ax & 0xFF);
+          clear_flag(FLAG_OF);
+        }
+      }
       set_flag(FLAG_AF);
       set_flag(FLAG_CF);
-      if (!lock_ud) {
-        set_flags_zsp8(ax & 0xFF);
-        clear_flag(FLAG_OF);
-      }
     } else {
       set_reg8(reg_AL, al & 0x0F);
       clear_flag(FLAG_AF);
       clear_flag(FLAG_CF);
-      if (!lock_ud) { set_flags_zsp8(al & 0x0F); clear_flag(FLAG_OF); }
+      if (cpu_type == CPU_8088) {
+        set_flags_zsp8(al);  // 8088: ZSP from original AL
+        clear_flag(FLAG_OF);
+      } else if (!lock_ud) { set_flags_zsp8(al & 0x0F); clear_flag(FLAG_OF); }
     }
     break;
   }
@@ -2089,19 +2206,31 @@ void emu88::execute(void) {
   case 0x3F: {
     emu88_uint8 al = get_reg8(reg_AL);
     if ((al & 0x0F) > 9 || get_flag(FLAG_AF)) {
-      emu88_uint16 ax = regs[reg_AX] - 0x106;
-      regs[reg_AX] = (ax & 0xFF0F);
+      if (cpu_type == CPU_8088) {
+        // 8088: separate AL-6 and AH-1 (no borrow from AL to AH)
+        emu88_uint8 new_al = al - 6;
+        set_flags_zsp8(new_al);
+        set_flag_val(FLAG_OF, al >= 0x80 && al <= 0x85);  // signed overflow of al-6
+        set_reg8(reg_AL, new_al & 0x0F);
+        set_reg8(reg_AH, get_reg8(reg_AH) - 1);
+      } else {
+        emu88_uint16 ax = regs[reg_AX] - 0x106;
+        regs[reg_AX] = (ax & 0xFF0F);
+        if (!lock_ud) {
+          set_flags_zsp8(ax & 0xFF);
+          clear_flag(FLAG_OF);
+        }
+      }
       set_flag(FLAG_AF);
       set_flag(FLAG_CF);
-      if (!lock_ud) {
-        set_flags_zsp8(ax & 0xFF);
-        clear_flag(FLAG_OF);
-      }
     } else {
       set_reg8(reg_AL, al & 0x0F);
       clear_flag(FLAG_AF);
       clear_flag(FLAG_CF);
-      if (!lock_ud) { set_flags_zsp8(al & 0x0F); clear_flag(FLAG_OF); }
+      if (cpu_type == CPU_8088) {
+        set_flags_zsp8(al);  // 8088: ZSP from original AL
+        clear_flag(FLAG_OF);
+      } else if (!lock_ud) { set_flags_zsp8(al & 0x0F); clear_flag(FLAG_OF); }
     }
     break;
   }
@@ -2148,6 +2277,11 @@ void emu88::execute(void) {
   case 0x50: case 0x51: case 0x52: case 0x53:
   case 0x54: case 0x55: case 0x56: case 0x57:
     if (op_size_32) push_dword(get_reg32(opcode & 7));
+    else if (opcode == 0x54 && cpu_type == CPU_8088) {
+      // 8088 PUSH SP pushes the already-decremented value (SP-2)
+      regs[reg_SP] -= 2;
+      store_word(sregs[seg_SS], regs[reg_SP], regs[reg_SP]);
+    }
     else push_word(regs[opcode & 7]);
     break;
 
@@ -2383,7 +2517,8 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     int sreg_idx = mr.reg_field & 7;
-    if (!lock_ud && sreg_idx >= 4) { raise_exception_no_error(6); break; }
+    if (cpu_type == CPU_8088) sreg_idx &= 3;  // 8088: only ES/CS/SS/DS
+    else if (!lock_ud && sreg_idx >= 4) { raise_exception_no_error(6); break; }
     if (sreg_idx >= 6) sreg_idx = 0;
     if (op_size_32 && mr.is_register) {
       set_reg32(mr.rm_field, (emu88_uint32)sregs[sreg_idx]);
@@ -2408,11 +2543,14 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     int sreg_idx = mr.reg_field & 7;
-    if (!lock_ud && sreg_idx >= 4) { raise_exception_no_error(6); break; }
-    if (sreg_idx == seg_CS) {
-      // MOV CS is invalid on 286+; raise #UD
-      raise_exception_no_error(6);
-      break;
+    if (cpu_type == CPU_8088) {
+      sreg_idx &= 3;  // 8088: only ES/CS/SS/DS, MOV CS is valid
+    } else {
+      if (!lock_ud && sreg_idx >= 4) { raise_exception_no_error(6); break; }
+      if (sreg_idx == seg_CS) {
+        raise_exception_no_error(6);  // MOV CS invalid on 286+
+        break;
+      }
     }
     if (sreg_idx >= 6) sreg_idx = 0;
     { emu88_uint16 val = get_rm16(mr);
@@ -2501,6 +2639,7 @@ void emu88::execute(void) {
       break;
     }
     if (op_size_32) push_dword((get_eflags() & ~(emu88_uint32)EFLAG_VM) | 0x0002);
+    else if (cpu_type == CPU_8088) push_word(flags | 0xF002);  // 8088: bits 12-15 set
     else push_word((flags & 0x7FFF) | 0x0002);
     break;
 
@@ -2715,7 +2854,7 @@ void emu88::execute(void) {
   case 0xC6: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
-    if (mr.reg_field != 0) { raise_exception_no_error(6); break; }
+    if (mr.reg_field != 0 && cpu_type >= CPU_286) { raise_exception_no_error(6); break; }
     emu88_uint8 imm = fetch_ip_byte();
     if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
     set_rm8(mr, imm);
@@ -2726,7 +2865,7 @@ void emu88::execute(void) {
   case 0xC7: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
-    if (mr.reg_field != 0) { raise_exception_no_error(6); break; }
+    if (mr.reg_field != 0 && cpu_type >= CPU_286) { raise_exception_no_error(6); break; }
     if (op_size_32) {
       emu88_uint32 imm = fetch_ip_dword();
       if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
@@ -3061,7 +3200,14 @@ void emu88::execute(void) {
     emu88_uint8 result = (product + al) & 0xFF;
     set_reg8(reg_AL, result);
     set_reg8(reg_AH, 0);
-    if (!lock_ud) {
+    if (cpu_type == CPU_8088) {
+      // 8088: AAD sets ZSP, CF, AF, OF from internal addition overflow
+      bool cf = (emu88_uint16(product) + al) > 0xFF;
+      set_flags_zsp8(result);
+      set_flag_val(FLAG_CF, cf);
+      set_flag_val(FLAG_OF, ((product ^ result) & (al ^ result) & 0x80) != 0);
+      set_flag_val(FLAG_AF, ((product ^ al ^ result) & 0x10) != 0);
+    } else if (!lock_ud) {
       bool cf = (emu88_uint16(product) + al) > 0xFF;
       set_flags_zsp8(result);
       set_flag_val(FLAG_CF, cf);
@@ -3707,8 +3853,14 @@ void emu88::execute(void) {
     break;
   }
 
-  //--- 0x0F two-byte opcode prefix (286+) ---
+  //--- 0x0F: POP CS (8088) or two-byte opcode prefix (286+) ---
   case 0x0F: {
+    if (cpu_type == CPU_8088) {
+      // 8088: 0x0F = POP CS
+      emu88_uint16 val = pop_word();
+      load_segment_real(seg_CS, val);
+      break;
+    }
     emu88_uint8 op2 = fetch_ip_byte();
     switch (op2) {
 

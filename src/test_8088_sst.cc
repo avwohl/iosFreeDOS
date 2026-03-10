@@ -330,11 +330,12 @@ static int sst_run_file(const std::string& filepath, const std::string& basename
     cpu.reset();
     cpu.init_seg_caches();
 
-    // 8088: 20-bit address bus, A20 always enabled in test context
-    memory.set_a20(true);
+    // 8088: 20-bit address bus, no A20 gate — addresses wrap at 1MB
+    memory.set_a20(false);
 
-    // 8088/8086 behavior: LOCK on invalid does cause #UD (same as 386)
-    cpu.lock_ud = true;
+    // 8088 mode
+    cpu.cpu_type = emu88::CPU_8088;
+    cpu.lock_ud = false;  // 8088 has no #UD exception
 
     // Load initial state
     for (int i = 0; i < 14; i++) {
@@ -436,7 +437,7 @@ static int sst_run_file(const std::string& filepath, const std::string& basename
 
 // ---- Public entry point ----
 
-int run_8088_sst_tests() {
+int run_8088_sst_tests(const char* filter) {
   if (!download_8088_tests()) {
     fprintf(stderr, "8088 SingleStepTests: SKIPPED (download failed)\n");
     return 0;
@@ -448,8 +449,14 @@ int run_8088_sst_tests() {
   struct dirent* ent;
   while ((ent = readdir(d))) {
     std::string name = ent->d_name;
-    if (name.size() >= 4 && name.substr(name.size()-4) == ".MOO")
+    if (name.size() >= 4 && name.substr(name.size()-4) == ".MOO") {
+      if (filter) {
+        // Match filter against basename without .MOO extension
+        std::string base = name.substr(0, name.size() - 4);
+        if (base != filter) continue;
+      }
       files.push_back(name);
+    }
   }
   closedir(d);
   std::sort(files.begin(), files.end());
