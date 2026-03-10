@@ -41,11 +41,18 @@ jobs:
           curl -L --retry 3 --connect-timeout 30 -o fd/freedos.img \
             https://www.awohl.com/freedos/freedos.img
 
-      - name: Download FreeDOS 1.4 LiveCD ISO
+      - name: Download FreeDOS 1.4 ISOs
         run: |
-          # Original: https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14LIVE.iso
+          # Original sources (ibiblio rate-limits CI runners):
+          #   https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14LIVE.iso
+          #   https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/official/FD14BNS.iso
+          echo "Downloading FreeDOS 1.4 LiveCD..."
           curl -L --retry 3 --connect-timeout 30 -o fd/FD14LIVE.iso \
             https://www.awohl.com/freedos/FD14LIVE.iso
+          echo "Downloading FreeDOS 1.4 Bonus CD..."
+          curl -L --retry 3 --connect-timeout 30 -o fd/FD14BNS.iso \
+            https://www.awohl.com/freedos/FD14BNS.iso
+          ls -lh fd/*.iso
 
       - name: Download DOOM shareware
         run: |
@@ -59,6 +66,12 @@ jobs:
       - name: Build starter disk image
         run: scripts/build_starter_disk.sh
 
+      - name: Build hard disk image
+        run: scripts/build_hdd.sh
+
+      - name: Build games disk image
+        run: scripts/build_games_disk.sh
+
       - name: Update disk catalog SHA256 from built images
         run: |
           python3 << 'PYEOF'
@@ -66,6 +79,8 @@ jobs:
 
           disks = {
             "freedos_starter.img": "fd/freedos_starter.img",
+            "freedos_hd.img": "fd/freedos_hd.img",
+            "freedos_games.img": "fd/freedos_games.img",
           }
 
           xml_path = "release_assets/disks.xml"
@@ -92,7 +107,7 @@ jobs:
       - name: Verify disk catalog SHA256
         run: |
           fail=0
-          for img in fd/freedos_starter.img; do
+          for img in fd/freedos_starter.img fd/freedos_hd.img fd/freedos_games.img; do
             [ -f "$img" ] || continue
             fname=$(basename "$img")
             actual=$(shasum -a 256 "$img" | cut -d' ' -f1)
@@ -121,8 +136,17 @@ jobs:
           cp dos/w.com dist/
           # Boot disk
           cp fd/freedos.img dist/
-          # Starter disk image
+          # Disk images
           cp fd/freedos_starter.img dist/
+          if [ -f fd/freedos_hd.img ]; then
+            cp fd/freedos_hd.img dist/
+          fi
+          if [ -f fd/freedos_games.img ]; then
+            cp fd/freedos_games.img dist/
+          fi
+          if [ -d fd/games ]; then
+            tar czf dist/shareware-games.tar.gz -C fd games GAMES.TXT
+          fi
           # Generate checksums
           cd dist && shasum -a 256 * > SHA256SUMS
 
