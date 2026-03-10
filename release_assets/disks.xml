@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<catalog version="9">
+<catalog version="10">
     <disk>
         <filename>freedos_starter.img</filename>
         <name>FreeDOS Starter</name>
@@ -18,7 +18,6 @@
         <size>210051072</size>
         <license>GPL / Mixed Freeware</license>
         <sha256>5d0202c4428370faddae908718076cd128a4ae3b57f0e89ee1d200bc42de54a8</sha256>
-        <defaultDrive>128</defaultDrive>
     </disk>
     <disk>
         <filename>freedos_games.img</filename>
@@ -28,7 +27,6 @@
         <size>210051072</size>
         <license>Mixed Freeware</license>
         <sha256>ec48efe6c97ff079fe640d84dac2bcf00a5027f6b95c8a21d3be33910dc99408</sha256>
-        <defaultDrive>129</defaultDrive>
     </disk>
     <disk>
         <filename>fd13-floppy.img</filename>

@@ -66,13 +66,50 @@ jobs:
       - name: Build games disk image
         run: scripts/build_games_disk.sh
 
+      - name: Update disk catalog SHA256 from built images
+        run: |
+          # CI builds produce different binaries than local (FAT timestamps),
+          # so we must compute SHA256 after building and inject into disks.xml.
+          for img in fd/freedos_starter.img fd/freedos_hd.img fd/freedos_games.img; do
+            [ -f "$img" ] || continue
+            fname=$(basename "$img")
+            sha=$(shasum -a 256 "$img" | cut -d' ' -f1)
+            size=$(wc -c < "$img" | tr -d ' ')
+            echo "$fname: sha256=$sha size=$size"
+            # Update SHA256
+            sed -i '' "/<filename>$fname</{n;n;n;n;n;s|<sha256>.*</sha256>|<sha256>$sha</sha256>|;}" release_assets/disks.xml
+            # Update size
+            sed -i '' "/<filename>$fname</{n;n;n;s|<size>.*</size>|<size>$size</size>|;}" release_assets/disks.xml
+          done
+          echo "--- Updated disks.xml ---"
+          cat release_assets/disks.xml
+
+      - name: Verify disk catalog SHA256
+        run: |
+          fail=0
+          for img in fd/freedos_starter.img fd/freedos_hd.img fd/freedos_games.img; do
+            [ -f "$img" ] || continue
+            fname=$(basename "$img")
+            actual=$(shasum -a 256 "$img" | cut -d' ' -f1)
+            expected=$(grep -A6 "<filename>$fname</filename>" release_assets/disks.xml | grep sha256 | sed 's/.*<sha256>//;s/<.*//')
+            if [ "$actual" != "$expected" ]; then
+              echo "FAIL: $fname SHA256 mismatch"
+              echo "  expected: $expected"
+              echo "  actual:   $actual"
+              fail=1
+            else
+              echo "OK: $fname $actual"
+            fi
+          done
+          [ $fail -eq 0 ] || exit 1
+
       - name: Collect release assets
         run: |
           mkdir -p dist
           # Help system
           cp release_assets/help_index.json dist/
           cp release_assets/help_*.md dist/
-          # Disk catalog
+          # Disk catalog (with CI-computed SHA256s)
           cp release_assets/disks.xml dist/
           # DOS utilities
           cp dos/r.com dist/
