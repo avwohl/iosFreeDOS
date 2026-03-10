@@ -1,0 +1,253 @@
+             °°±±²²ÛÛ  THE "BIO MENACE" ON-DISK HINT SHEET ÛÛ²²±±°°
+                          2005 Freeware Release Edition
+
+                   Copyright 1993 Apogee Software Productions
+                       P.O. Box 496389 þ Garland, TX 75049
+
+                          Game designed by Jim Norwood
+                        Core game engine by Id Software
+
+
+                                ================
+                                ABOUT BIO MENACE
+                                ================
+
+2005 Freeware Release Notes: Please be aware that as of December 2005, this 
+game is released as freeware.  We retain copyright on it, so you can't "do 
+whatever you want", but you are free to enjoy the full registered version of 
+the game.  Furthermore, no support or game hints of any kind are offered on Bio 
+Menace.  You're on your own.
+
+-------------
+
+You are Snake Logan, a top CIA operative who likes to do things his own way.
+Metro City has fallen under the attack of hideous mutants and your mission is
+to fly recon over the city and report back.  While circling over the city you
+are shot down by hostile forces and forced to crash land on the streets of
+Metro.  Grabbing what supplies you can find you are out to discover the source
+of these mutants and especially the guy who shot you down!
+
+Intelligence reports indicate that a man calling himself Dr. Mangle is
+responsible for the mutants and the destruction of Metro.  You will have to
+battle your way through many levels packed with evil mutants and robotic guards
+to finally infiltrate Mangle's fortress and defeat him.  You wonder how just
+one man could be responsible for so much trouble.
+
+
+                       =================================
+                       INSTALLING AND PLAYING BIO MENACE
+                       =================================
+
+Attempting to install the commercial version of the game on top of the
+shareware version will cause problems with the proper operation of the game.
+Please make sure to remove the shareware episode before installing the
+commercial version.
+
+You must first install each of the three volumes before playing.  Place disk
+one in the appropriate disk drive.  Select the drive from the DOS prompt.
+Type "INSTALL" and press the <ENTER> key.  The installation program will prompt
+for the drive and then for the directory into which the software will be
+copied.  Press <ENTER> to accept the defaults or type the destination of your
+choice.  The installation program for multiple disk sets will prompt for
+additional disks as needed.  After installation is complete, the three games
+may be played by typing either "BMENACE1", "BMENACE2" or "BMENACE3".
+
+If you experience any trouble playing Bio Menace, please consult the On-Disk
+Technical Support file.  This may be executed by entering BM-HELP from your
+game directory.  When you originally installed the game, this file was placed
+in your game directory.  If you have removed it, you can find it on Disk 1 of
+your original diskette(s) from Apogee.
+
+
+                                 =============
+                                 GENERAL HINTS
+                                 =============
+
+þ There are large stone blocks that Snake can push along the ground or off of
+  ledges to get to different places or stay protected from enemy fire.
+
+þ Look for lots of treasures and ammunition in hidden areas throughout each
+  episode.  Some walls aren't as solid as other walls and hold hidden rooms
+  containing various items.
+
+þ There are secret level bonus gems on some levels that will warp you to a
+  hidden level that you could not otherwise go to.  The secret levels hold lots
+  of cool treasures to help Snake on his way.
+
+þ It is to your advantage to explore every nook and cranny of each level.  Many
+  items are hidden in out of the way places that would otherwise seem
+  unimportant.
+
+þ Don't pick up the land mine weapon until you are ready to use it since this
+  weapon takes the highest priority in your grenade inventory.  You won't be
+  able to throw grenades until you've used up all the mines.  Use the land
+  mines as a means to trap hard to kill enemies and destroy them while you stay
+  tucked away in a safe area.
+
+þ In Level 10 of Episode 2 you can find the Apogee developers running the game
+  in a secret room by entering the door at the top right of the level.  They
+  will have lots of stuff to reward you with after warning you to keep quiet
+  about their presence.  Take care not to shoot at them.  We are invincible and
+  have much better fire power than Snake does. (Shooting us is fun if you can
+  escape before taking a fatal amount of damage....)
+
+þ Fire grenades explode on contact with an enemy, however, if you throw them in
+  such a way that they land in front of the intended target without hitting it,
+  they'll burst into a tornado of flames a head off in the direction you threw
+  it destroying everything it hits; even going right through multiple targets.
+
+þ Synchronize yourself in harmony to Bobby Prince's score of music on each
+  level to obtain cosmic inspiration resulting in miraculous finger dexterity
+  and a euphoric sense of well being.
+
+
+                               =================
+                               EPISODE ONE HINTS
+                               =================
+
+þ DOWNTOWN METRO: Flip the switch at the top of the second building from the
+  left to activate the platform at the top of the first building.  Go to the
+  top of the first building and there are super bullets and a 5,000 point gem.
+
+þ HIGH RISE: Clear out all of the lesser enemies at the top of the building
+  first and then go back and get Robo Pal to help you kill the tough enemies
+  at the exit.
+
+þ CITY PARK: Get the secret level bonus gem at the very top of the first tree.
+  Collect the 5,000 point bonus gems hidden on ledges at the far right of the
+  level.
+
+þ SOUTH SIDE: Flip the switch to make the platform work and it will take you up
+  to a 50,000 point bonus gem in the center of the level.
+
+þ CAVES: There is a secret level bonus gem hidden in the roof above the
+  rotating spike beam.
+
+þ SKULLMAN: Concentrate on shooting Skullman's head and not the floating hands
+  as they are hard to kill and use up all the ammunition.
+
+þ ELEVATOR: The glowing skulls mounted in the wall just above the water are
+  actually place markers for blocks just under the water surface that you can
+  jump across to the other side.  Use the green shard you pick up on the other
+  end to activate the platform on the above right hand side to climb up to the
+  secret observation area on the upper right side of the level.  You can
+  collect weapons and kill enemies in safety on this side of the level.
+
+þ NO MANS LAND: There is secret level bonus gem hidden in the roof above the
+  hostage.
+
+þ COMPUTER CORE: There is a secret level bonus gem hidden in the second ion
+  cannon from the left.
+
+þ MANGLE'S LAST STAND: Jump up on top of the entrance to view the color code
+  combination to get the bonus items from the right side of the level.
+
+
+                               =================
+                               EPISODE TWO HINTS
+                               =================
+
+þ CORRIDOR: Get the secret level bonus gem inside the hidden wall just above
+  the exit on the right side of the level.
+
+þ ANT CAVES: Get the secret level bonus gem by riding the first fall block down
+  and jumping onto the left ledge.  Then enter the door and jump off the roof
+  above the entrance to collect 50,000 point bonus gem and special weapon.
+
+þ QUEEN ANT: There is a place at the top left of the level where it is safer to
+  shoot the Queen Ant and stay more protected from the flying nymphs.
+
+þ GENETICS LAB: Be sure to get the nuclear bomb before leaving the level or you
+  will ultimately lose the game and Snake will be killed at the end since he
+  will not be able to use the bomb to destroy the lab.
+
+þ Be sure and get the secret level bonus gem from the Apogee room in the
+  Specimens Lab.
+
+þ THE ENFORCER: Be sure to install the nuclear bomb before going out the final
+  exit to destroy the lab.
+
+
+                              ===================
+                              EPISODE THREE HINTS
+                              ===================
+
+þ FORT ENTRANCE: Don't jump down in the pit to try and get the 50,000 point
+  bonus gem, it's a death trap.
+
+þ GUARD TOWER: At the top gun turret, at the top left of the level, get the
+  secret level bonus gem by entering the wall on the left.
+
+þ GOLIATH!: Throw grenades down on the guardian robot on the right side of the
+  level to kill it before going on to Goliath himself.
+
+þ UTILITY MAINTENANCE: Get the secret level bonus gem inside the wall above
+  the exit door.
+
+þ CIRCLE OF DEATH: Get the secret level bonus gem at the floor second down from
+  the top right by jumping up into the roof.
+
+þ MASTER CAIN: Ignoring electro blasts from Master Cain and attacks from the
+  critter mutants, run to the far right of the level and collect all the power
+  ups to defeat Master Cain.
+
+
+                              ===================
+                              SECRET BATTLE MOVES
+                              ===================
+
+þ  There are four secret moves which give Snake valuable added weapons to
+   help balance the scales against his evil foes!   They are:
+
+   þ SUPER PLASMA BOLT
+
+     Hold the up arrow, (or up on the joystick), until you hear an electrical
+     charge sound.  Once you hear this sound, press the fire button and a
+     plasma beam will shoot in the direction you are facing burning through a
+     whole line of enemies!  Beware, this is a powerful weapon and the toxic
+     fume cloud it leaves behind inflicts one point of damage on Snake!  Use
+     this weapon wisely!
+
+   þ FIRE BALL ATTACK
+
+     Turn left to right, back and forth in succession about five or six turns
+     rapidly and press the fire button.  Snake uses his secret energy pack to
+     disperse six flaming fire balls, three in each direction, to toast those
+     hard to get at enemies.
+
+   þ ELECTRON SHIELD
+
+     Protects Snake and zaps any enemies daring to touch him for a limited
+     amount of time.
+
+   þ INVINCIBILITY BURST
+
+     Gives you a short burst of invincibility without having to find an
+     invincibility potion.
+
+We've left the Electron Shield and the Invincibility burst there for you to
+experiment with, and find on your own.  We don't want to give EVERYTHING away,
+now do we?  :)
+
+
+                               =================
+                               SECRET CHEAT KEYS
+                               =================
+
+There is an option cheat mode built into Bio Menace.  If you press these three
+keys simultaneously, you will get the normal machine gun with 90 rounds of
+ammunition, and 99 regular grenades.   The keys are [C] [A] [T].  This
+combination can be used as many times as you wish, and only works on the
+commercial version of the software.
+
+
+                               ==================
+                               THANKS FROM APOGEE
+                               ==================
+
+A sincere thanks for purchasing this software package.  Much time, effort, and
+expense goes into the development of our software, and your support helps
+ensure that we will be able to continue bringing you high quality, enjoyable
+software.   Enjoy the game!
+
+[ END OF FILE ]

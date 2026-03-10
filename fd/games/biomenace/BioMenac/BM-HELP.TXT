@@ -1,0 +1,301 @@
+     °°±±²²ÛÛ  "BIO MENACE" VERSION 1.1 ON-DISK TECHNICAL SUPPORT  ÛÛ²²±±°°
+                          2005 Freeware Release Edition
+
+                         Copyright 1993 Apogee Software
+                       P.O. Box 496389 þ Garland, TX 75049
+
+          THIS GAME IS BEING OFFERED AS FREEWARE WITH NO TECH SUPPORT!
+
+                                ===============
+                                ABOUT THIS FILE
+                                ===============
+
+2005 Update Notes:  In December of 2005, Apogee released Bio Menace as 
+freeware, with no support offered.  This means that you are on your own in 
+getting the game to run.  We offer no help with this release.  This file 
+originally came with the game when you bought it, and is being released as 
+part of the history of the game.  However, most of the technical information 
+no longer applies as it was written in the summer of 1993, and was done during 
+the time when MS-DOS was the primary operating system.  More modern OS's like 
+Windows XP and Windows Vista will likely have problems getting the game to 
+run.  We recommend a third party program called DOSBox, which has been known 
+to help in getting old DOS games working.  You can obtain DOSBox here: 
+http://dosbox.sourforge.net - however, please be aware that DOSBox is not our 
+program either, and we can't help with that.  This is a freeware release.  
+While we retain copyright on the title, it is being released "as is" with no 
+support.
+
+          THIS GAME IS BEING OFFERED AS FREEWARE WITH NO TECH SUPPORT!
+
+This document will provide you with some basic Technical Support.  The
+information is not intended to replace the Technical Support Department.  If
+you attempt these solutions and are still having problems, then feel free to
+call our Technical Support Department; they will be able to provide you with
+further assistance.  They can be reached from the hours of 8AM-6PM CST Monday
+through Friday.  If possible, please be in front of your computer when calling
+for Technical Support; it may be difficult or impossible to assist you
+otherwise.
+
+
+                            ========================
+                            BEFORE RUNNING THIS GAME
+                            ========================
+
+þ This game is not designed to be run under MicroSoft Windows.  Windows takes
+  up far too many system resources that our programs require for efficient and
+  proper operation.  When running this program, DO NOT LAUNCH FROM WINDOWS.
+  Run it directly from DOS.  If you are in the Windows environment, quit
+  Windows and then run the program.  (NOTE: Using the MS/DOS Icon does not exit
+  you from Windows.  That is a shell from Windows.  You need to press ALT-F4 to
+  completely quit Windows.)  This applies to OS/2 as well.  We do not recommend
+  running under OS/2 for the same reasons as Windows.
+
+þ Any kind of menu program such as Dosshell will cause problems.  We recommend
+  running our programs completely from the DOS prompt.
+
+þ All of our products require at least MS/DOS 3.3 or greater.  We recommend,
+  however, using at least DOS 5, but preferably DOS 6, because these versions
+  have far better memory management than any previous versions of DOS.
+
+
+                            ========================
+                            BIO MENACE SPECIFIC HELP
+                            ========================
+
+          THIS GAME IS BEING OFFERED AS FREEWARE WITH NO TECH SUPPORT!
+
+þ During the testing of this game, Quarterdeck released QEMM 7.01, and Qualitas
+  released 386MAX 7.0.  These two programs are incompatible with Bio Menace.
+  There are no known problems with older versions of these memory managers.
+
+  MicroSoft's EMM386 appears to be the most compatible with Bio Menace, with
+  the most recent revision having been tested.  The only problem that was run
+  into using EMM386 was if you used the HIGHSCAN option.  That is also
+  incompatible.
+
+  The only solution to the memory manager problems listed above would be to
+  deactivate these programs before executing Bio Menace.  The easiest way to do
+  this would be to boot clean.  Booting clean is another term for what is
+  explained in detail in the solutions to General Problem #1, solutions 3 & 4.
+
+  Your mileage may vary with any of these high memory manager comments.
+
+þ If your game just locks up for no apparent reason (especially when firing
+  a weapon, or when hitting one of the purple slugs), you'll need to try
+  adding this to your CONFIG.SYS file.
+
+  STACKS=9,128
+
+  Adding this to your CONFIG.SYS file, saving it and rebooting your computer
+  should allow you to play the game without any problems.
+
+þ There are a few command line parameters you can try to use to help other
+  things that might turn up when playing the game.  A command line parameter
+  is something that you type on the command line after the name of the program
+  you're running.  The /COMP switch will be used as an example.  To use that
+  one, you would need to start the game like this...
+
+  BMENACE1 /COMP  (or BMENACE2 /COMP, or BMENACE3 /COMP)
+
+  The command line parameters for Bio Menace are stackable, which means that
+  you can use more than one at a time, if you need to.  An example of a stacked
+  set of command line parameters would look like this...
+
+  BMENACE1 /COMP /NOJOYS
+
+  Here is a list of the common command line parameters you can use with Bio
+  Menace, and what they are used for.
+
+  /COMP       -> If you are getting jittery video diplays and have a SuperVGA
+                 card, try using this one.  This has the same effect as using
+                 the "SVGA Compatibility" switch inside the game's config menu.
+
+  /LATCHPEL   -> For owners of ATI SVGA cards, and other similar types of Super
+                 VGA cards, this will solve any "jerky motion" problems you may
+                 be having with Bio Menace.
+
+  /NOAL       -> Disable Adlib Sound Card Detection
+
+  /NOJOYS     -> Disable Joystick detection.   If for some reason Snake Logan
+                 just decides he wants to go one direction, and you can't get
+                 him to go any other way, it might mean the game thinks you
+                 have a joystick, when you don't.  Also, if you see the initial
+                 screen detecting a joystick and you don't have one, use this
+                 parameter.
+
+  /NOMOUSE    -> Disable mouse detection.  While Bio Menace does not use the
+                 mouse for actual game play, it can be used in the menu
+                 selection screens.   If the control menu acts improperly (the
+                 selector just starts scrolling, and doesn't stop, for example)
+                 try using this switch to disable the mouse check routines.
+
+
+                               ==================
+                               GENERAL PROBLEM #1
+                               ==================
+
+þ All of the problems in this section are generic.  They will also work with
+  the majority of Apogee's products.  Most will work for Bio Menace, but the
+  help in this section is not specific to Bio Menace.  If you try the generic
+  help solutions, and you are still having problems, then try the ideas in
+  the Bio Menace specific section.
+
+þ Problem
+
+The program returns a message that says you do not have enough memory to run
+the game, or the program behaves erratically when it is executed.
+
+þ Explanation
+
+There is not enough conventional memory available to execute the game you are
+attempting to run.  When MicroSoft first made DOS 1.0, 640 kilobytes (KB) was
+set aside as the highest amount of memory that a computer could have.  The
+640KB of memory is what is called "conventional memory".  To maintain
+compatibility with older versions, this was never changed.  Advances in memory
+management have made access to memory beyond 640KB, but this memory can only
+hold data; the program actually has to run in the first 640KB.  It is this
+memory that you are running out of.
+
+Conventional memory is used by DOS as well as device drivers and TSRs
+(Terminate and Stay Resident Programs).  A TSR is a program that is loaded into
+your computer's memory (usually from the CONFIG.SYS or AUTOEXEC.BAT files) and
+stays there.  Most programs remove themselves from memory after execution, a
+TSR does not.  Device drivers and TSRs are programs that enable the computer to
+use additional hardware such as a mouse, scanner, CD-ROM, expanded or extended
+memory, etc.  When you first start up your computer, there are two files that
+your computer looks at: CONFIG.SYS and AUTOEXEC.BAT.  These two files contain
+lists of device drivers and TSRs that are loaded into memory.
+
+NOTE: It is possible that Apogee games may run with a figure of available
+conventional memory that is less than the recommended amount.  It is very
+likely, however that the program will behave erratically under these
+conditions.  Even if the game appears to run with less than the recommended
+amount of conventional memory, we recommend that you raise your amount of
+conventional memory to ensure proper program execution.
+
+þ Solution 1
+
+Try removing some of your TSRs.
+
+þ Solution 2
+
+If you have some high memory available, and are running at least DOS 5.0, add
+the following line to your CONFIG.SYS file.. "DOS=HIGH" (without the quotes).
+This will load your DOS into high memory, and will make more room available in
+the first 640k of memory mentioned in the explanation above.
+
+þ Solution 3
+
+If you are running MS/DOS 6, skip directly to Solution 4.
+
+a) If you are running Stacker, DoubleSpace, or some other sort of compressed
+   drive program, copy our product to a section of your hard drive that is not
+   compressed.
+b) Place a diskette in drive A:.  (If A: is a High Density Drive, you'll need
+   a high density diskette).
+c) Switch to the C: prompt.
+d) Type FORMAT A: /S
+e) If necessary, press enter for the question about Volume Label.
+f) Enter N to "Format another?"
+g) LEAVE THIS DISKETTE IN YOUR A: DRIVE, and reboot your computer.
+h) The computer should ask you for the date and the time.  Just press enter to
+   these questions.  At this point, you will be at the A: prompt.  Now, switch
+   to the C: drive, then change to the directory in which the game is installed
+   and start the game.  You should no longer have this problem.  Please note
+   that if this solution solves the problem, you will need to do this every
+   time you wish to play the game.
+
+þ Solution 4
+
+This Solution is for MS/DOS 6.0 users only.
+ 
+a) If you are running Stacker, DoubleSpace, or some other sort of compressed
+   drive program, copy our product to a section of your hard drive that is not
+   compressed.
+b) Reboot your computer.
+c) When the message "Starting MS/DOS" appears, hold down the F5 key.  This
+   does the same thing as steps 2 through 7 in Solution 3.  If your system
+   boots normally, you waited too long to hit the F5 key. Reboot and try again.
+d) You should see a message that says "MS/DOS is bypassing your CONFIG.SYS and
+   AUTOEXEC.BAT files".
+e) Switch to the C: drive, then change to the directory in which the game is
+   installed and start the game.  Please note that if this solution solves the
+   problem, then you will need to do this every time you wish to play the game.
+
+NOTE: If you have a PS/1, and these steps do not work for you, please contact
+IBM's Technical Support Department, or Apogee's Tech Department in order to
+find out how to boot from a System Disk, since the procedure is extremely
+different from what is described above.
+
+
+                               ==================
+                               GENERAL PROBLEM #2
+                               ==================
+
+þ Problem
+
+The game locks up either during game play, or during the loading process.
+
+þ Explanation 1
+
+This can be any number of things, but is usually a conflict with a memory
+manager, or a TSR(s) in your system.  It can also be a DMA conflict if you have
+a Sound Blaster Sound card.  Apogee only directly supports the Sound Blaster
+and AdLib family of cards, and any other card has to have 100% compatibility in
+order to function properly.  Many other sound cards out claim to be 100%
+compatible with the Sound Blaster standard, but in reality they are not.
+
+þ Solution 1
+
+Try the solutions under General Problem #1 first.
+
+þ Solution 2
+
+Turn off the digitized sounds completely.  If the game plays normally, a DMA
+conflict most likely exists between your sound card and some other piece of
+hardware in your computer.  You will need to change the DMA channel in order to
+solve the DMA conflict.  Consult your sound card manual for instructions on how
+to do this.  If you do indeed change the DMA channel, you must reflect said
+change in the SET BLASTER line mentioned in the next solution.
+
+þ Solution 3
+
+Check your AUTOEXEC.BAT file to see if the SET BLASTER line is present.  If it
+is not, this could be the source of the problem.  Even if you don't have a
+Sound Blaster card, this line needs to be there.  The reason for this is that
+the game expects your sound card to be at a certain default setting.  If it
+isn't, the game looks for the environment variable BLASTER, and redirects the
+sound output to those settings.  If you are not on the default settings, and
+you don't have the proper SET BLASTER line, or it isn't there at all, a system
+lockup may occur.
+
+  SET BLASTER=Aw Ix Dy Tz
+
+  Where w is the Address Number. (99% of the time it's 220)
+  Where x is the Interrupt Number
+  Where y is the DMA Channel Number
+  Where z is the type of card.
+
+  z should be either 1 or 3 if it's a Sound Blaster
+  z should be either 2 or 4 if it's a Sound Blaster Pro
+  z should be 6 if it's a Sound Blaster 16
+  z is most likely 1 if you have a sound card other than a
+    legitimate Sound Blaster.
+
+  If you have a Sound Blaster 16, the D refers to the 8-bit DMA channel, not
+  the 16 Bit DMA channel.  That's stored under a different variable.
+
+Please note that at this time, no Apogee game supports an interrupt higher than
+7.  If you do have the SET BLASTER line present, and the interrupt is higher
+than 7, you MUST change it to 7 or lower, or you will continue to experience
+problems.   Once you have made this change to the AUTOEXEC.BAT file, you'll
+need to reboot your computer for these changes to take effect.  After
+rebooting, go to the directory the game is installed in, and delete the config
+file for that game.  The config file stores the configuration information for
+your system, and if you delete this file, it will force the game to rescan your
+computer, and get the new information.  The new information will then be placed
+in a newly created config file.  Any settings such as keyboard reassignments,
+or control device selections will be lost when the configuration file is
+deleted.
+
+[ END OF FILE ]

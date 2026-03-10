@@ -13,4 +13,3 @@ Local.xcconfig
 fd/x86*.img
 fd/*_dev.img
 fd/freedos_hd.img
-fd/games/

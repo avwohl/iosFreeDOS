@@ -437,8 +437,22 @@ class TerminalUIView: UIView, UIKeyInput {
 
             // Skip Cmd combos (system shortcuts, handled by keyCommands)
             if key.modifierFlags.contains(.command) { continue }
-            // Ctrl combos handled by keyCommands
-            if key.modifierFlags.contains(.control) { continue }
+
+            // Ctrl+letter from hardware keyboard: send ASCII 1-26
+            if key.modifierFlags.contains(.control) {
+                for ch in key.charactersIgnoringModifiers {
+                    if let a = ch.asciiValue {
+                        if a >= 0x61 && a <= 0x7A { // a-z
+                            onKeyInput?(Character(UnicodeScalar(a - 0x60)))
+                            handled = true
+                        } else if a >= 0x41 && a <= 0x5A { // A-Z
+                            onKeyInput?(Character(UnicodeScalar(a - 0x40)))
+                            handled = true
+                        }
+                    }
+                }
+                continue
+            }
 
             // Alt/Option+key: send scancode with ascii=0
             if key.modifierFlags.contains(.alternate) {

@@ -1,0 +1,48 @@
+______________________________________________________________________________
+
+                      I M P U L S E   G A M E S   I N C.
+
+                              LICENSE AGREEMENT
+______________________________________________________________________________
+
+For the purposes of this document, Software refers to the software program
+being distributed with this document.
+
+The following Agreement is a legal agreement between you, the "End User" of
+this Software, and the publisher of the Software, Impulse Games, Inc.
+
+1. The End User is granted a license to use one (1) copy of the Software on
+   a single computer.  The End User may not rent, lease, sell, or otherwise
+   distribute the Software.  The End User is permitted to make one (1) copy
+   of the Software, solely for backup or archival purposes.
+
+2. COPYRIGHT NOTICE:
+
+   This Software is protected by United States copyright laws and
+   international treaty provisions.  Copying any part or the "look and feel"
+   of this Software is strictly forbidden.
+
+3. LIMITED WARRANTY AND DISCLAIMER:
+
+   THIS SOFTWARE IS PROVIDED "AS-IS".  IMPULSE GAMES DOES NOT WARRANT
+   THAT THE OPERATION OF THIS SOFTWARE WILL BE UNINTERRUPTED OR ERROR-FREE.
+   IMPULSE GAMES WARRANTS THE MEDIUM THIS SOFTWARE WAS SHIPPED ON TO BE
+   FREE FROM DEFECTS FOR NINETY (90) FROM DATE OF RECEIPT AND WILL REPLACE
+   ANY DEFECTIVE DISK OR CD-ROM WITHIN THAT TIME PERIOD.
+
+   UNDER NO CIRCUMSTANCES WILL IMPULSE GAMES BE LIABLE FOR ANY DAMAGES,
+   INCLUDING LOSS OF DATA, LOST REVENUE, COST OF COVER, OR OTHER SPECIAL,
+   INCIDENTAL, CONSEQUENTIAL, OR INDIRECT DAMAGES ARISING FROM THE USE OR
+   ATTEMPTED USE OF THIS SOFTWARE OR ACCOMPANYING DOCUMENTATION, HOWEVER
+   CAUSED AND ON ANY THEORY OF LIABILITY.  THIS LIMITATION WILL APPLY EVEN
+   IF IMPULSE GAMES HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+   THE SOLE REMEDY FOR LOSS OR DAMAGE FROM USE OF THIS SOFTWARE, INDIRECTLY
+   OR OTHERWISE, SHALL BE LIMITED TO REFUND OF THE PURCHASE PRICE.
+   NO OTHER WARRANTIES ARE MADE RELATING TO THIS SOFTWARE, WHETHER EXPRESS,
+   IMPLIED, OR STATUTORY.
+
+   SOME STATES DO NOT ALLOW THE EXCLUSION OF IMPLIED WARRANTIES, SO THE ABOVE
+   EXCLUSIONS MAY NOT APPLY TO YOU.  THIS WARRANTY GIVES YOU SPECIFIC LEGAL 
+   RIGHTS.  YOU MAY ALSO HAVE OTHER RIGHTS WHICH VARY FROM STATE TO STATE.
+   THIS AGREEMENT SHALL BE GOVERNED BY THE LAWS OF THE STATE OF INDIANA.
+______________________________________________________________________________

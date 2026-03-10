@@ -67,10 +67,12 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
 
     // Emulator state
     @Published var isRunning: Bool = false
+    @Published var isStarting: Bool = false
     @Published var statusText: String = ""
     @Published var isControlifyActive: Bool = false
     @Published var isFnActive: Bool = false
     @Published var isAltActive: Bool = false
+    private var startCancelled: Bool = false
 
     // Configuration
     @Published var configManager = ConfigManager()
@@ -181,79 +183,109 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
             return
         }
 
-        emulator = DOSEmulator()
-        emulator?.delegate = self
-
-        // Apply machine config
+        // Capture state on main thread before dispatching to background
         let cfg = config
-        emulator?.setDisplayAdapter(DOSDisplayAdapter(rawValue: cfg.displayAdapter) ?? .cga)
-        emulator?.setMouseEnabled(cfg.mouseEnabled)
-        emulator?.setSpeakerEnabled(cfg.speakerEnabled)
-        emulator?.setSoundCard(Int32(cfg.soundCard))
-        emulator?.setCDROMEnabled(cfg.cdromEnabled)
-        emulator?.setSpeed(DOSSpeedMode(rawValue: cfg.speedMode) ?? .pc)
+        let paths = (floppyA: floppyAPath, floppyB: floppyBPath,
+                     hddC: hddCPath, hddD: hddDPath, iso: isoPath)
+        let manifests = manifestDrives
 
-        // Load disks
-        if let url = floppyAPath {
-            _ = url.startAccessingSecurityScopedResource()
-            if !emulator!.loadDisk(0, fromPath: url.path) {
-                url.stopAccessingSecurityScopedResource()
-                errorMessage = "Failed to load floppy A:"
-                showingError = true; return
-            }
-            url.stopAccessingSecurityScopedResource()
-        }
-        if let url = floppyBPath {
-            _ = url.startAccessingSecurityScopedResource()
-            _ = emulator!.loadDisk(1, fromPath: url.path)
-            url.stopAccessingSecurityScopedResource()
-        }
-        if let url = hddCPath {
-            _ = url.startAccessingSecurityScopedResource()
-            if !emulator!.loadDisk(0x80, fromPath: url.path) {
-                url.stopAccessingSecurityScopedResource()
-                errorMessage = "Failed to load hard disk C:"
-                showingError = true; return
-            }
-            url.stopAccessingSecurityScopedResource()
-        }
-        if let url = hddDPath {
-            _ = url.startAccessingSecurityScopedResource()
-            _ = emulator!.loadDisk(0x81, fromPath: url.path)
-            url.stopAccessingSecurityScopedResource()
-        }
-        if let url = isoPath {
-            _ = url.startAccessingSecurityScopedResource()
-            let result = emulator!.loadISO(url.path)
-            url.stopAccessingSecurityScopedResource()
-            if result < 0 {
-                errorMessage = "Failed to load CD-ROM ISO"
-                showingError = true; return
-            }
-        }
-
-        // Flag manifest drives so the emulator can detect writes to catalog disks
-        for drive in manifestDrives {
-            emulator?.setDiskIsManifest(Int32(drive), isManifest: true)
-        }
-
-        clearTerminal()
+        isStarting = true
         isRunning = true
-        terminalShouldFocus = true
-        manifestWriteWarningShown = false
-        emulator?.start(withBootDrive: Int32(config.bootDrive))
+        startCancelled = false
+        clearTerminal()
+        statusText = "Loading disks..."
 
-        diskSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.saveAllDisks()
-        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
 
-        // Poll for manifest disk write warnings
-        manifestPollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.checkManifestWriteWarning()
+            let emu = DOSEmulator()
+
+            // Apply machine config
+            emu.setDisplayAdapter(DOSDisplayAdapter(rawValue: cfg.displayAdapter) ?? .cga)
+            emu.setMouseEnabled(cfg.mouseEnabled)
+            emu.setSpeakerEnabled(cfg.speakerEnabled)
+            emu.setSoundCard(Int32(cfg.soundCard))
+            emu.setCDROMEnabled(cfg.cdromEnabled)
+            emu.setSpeed(DOSSpeedMode(rawValue: cfg.speedMode) ?? .pc)
+
+            // Load disks (heavy I/O, done off main thread)
+            var loadError: String? = nil
+
+            if let url = paths.floppyA, !self.startCancelled {
+                _ = url.startAccessingSecurityScopedResource()
+                if !emu.loadDisk(0, fromPath: url.path) { loadError = "Failed to load floppy A:" }
+                url.stopAccessingSecurityScopedResource()
+            }
+            if let url = paths.floppyB, !self.startCancelled, loadError == nil {
+                _ = url.startAccessingSecurityScopedResource()
+                _ = emu.loadDisk(1, fromPath: url.path)
+                url.stopAccessingSecurityScopedResource()
+            }
+            if let url = paths.hddC, !self.startCancelled, loadError == nil {
+                _ = url.startAccessingSecurityScopedResource()
+                if !emu.loadDisk(0x80, fromPath: url.path) { loadError = "Failed to load hard disk C:" }
+                url.stopAccessingSecurityScopedResource()
+            }
+            if let url = paths.hddD, !self.startCancelled, loadError == nil {
+                _ = url.startAccessingSecurityScopedResource()
+                _ = emu.loadDisk(0x81, fromPath: url.path)
+                url.stopAccessingSecurityScopedResource()
+            }
+            if let url = paths.iso, !self.startCancelled, loadError == nil {
+                _ = url.startAccessingSecurityScopedResource()
+                if emu.loadISO(url.path) < 0 { loadError = "Failed to load CD-ROM ISO" }
+                url.stopAccessingSecurityScopedResource()
+            }
+
+            DispatchQueue.main.async {
+                if self.startCancelled {
+                    self.isStarting = false
+                    self.isRunning = false
+                    self.statusText = ""
+                    return
+                }
+                if let error = loadError {
+                    self.errorMessage = error
+                    self.showingError = true
+                    self.isStarting = false
+                    self.isRunning = false
+                    self.statusText = ""
+                    return
+                }
+
+                self.emulator = emu
+                emu.delegate = self
+
+                for drive in manifests {
+                    emu.setDiskIsManifest(Int32(drive), isManifest: true)
+                }
+
+                self.terminalShouldFocus = true
+                self.manifestWriteWarningShown = false
+                self.isStarting = false
+                self.statusText = ""
+
+                emu.start(withBootDrive: Int32(cfg.bootDrive))
+
+                self.diskSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                    self?.saveAllDisks()
+                }
+                self.manifestPollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                    self?.checkManifestWriteWarning()
+                }
+            }
         }
     }
 
+    func cancelStart() {
+        startCancelled = true
+        isStarting = false
+        isRunning = false
+        statusText = ""
+    }
+
     func stop() {
+        if isStarting { cancelStart(); return }
         guard isRunning else { return }
         diskSaveTimer?.invalidate(); diskSaveTimer = nil
         manifestPollTimer?.invalidate(); manifestPollTimer = nil
@@ -300,6 +332,11 @@ class EmulatorViewModel: NSObject, ObservableObject, DOSEmulatorDelegate {
         }
 
         emu.sendCharacter(char.unicodeScalars.first.map { unichar($0.value) } ?? 0)
+
+        // Sync controlify state — emulator resets oneChar mode after processing
+        if isControlifyActive {
+            isControlifyActive = (emu.getControlify() != .off)
+        }
     }
 
     func sendDirectScancode(ascii: UInt8, scancode: UInt8) {

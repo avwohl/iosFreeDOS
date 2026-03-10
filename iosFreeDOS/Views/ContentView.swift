@@ -61,51 +61,76 @@ struct ContentView: View {
     // MARK: - Running View
 
     var runningView: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(viewModel.config.name)
-                    .font(.headline)
-                Spacer()
-                if !viewModel.statusText.isEmpty {
-                    Text(viewModel.statusText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+        ZStack {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(viewModel.config.name)
+                        .font(.headline)
+                    Spacer()
+                    if !viewModel.statusText.isEmpty {
+                        Text(viewModel.statusText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Button("Quit") {
+                        // Send Ctrl+C (ASCII 3) to interrupt the running DOS program
+                        viewModel.sendKey(Character(UnicodeScalar(3)))
+                    }
+                    .foregroundColor(.orange)
+                    .disabled(viewModel.isStarting)
+                    Button("Stop") { viewModel.stop() }
+                        .foregroundColor(.red)
                 }
-                Button("Stop") { viewModel.stop() }
-                    .foregroundColor(.red)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 6)
+                .padding(.horizontal)
+                .padding(.vertical, 6)
 
-            if let gfxImg = viewModel.gfxImage {
-                Image(uiImage: gfxImg)
-                    .interpolation(.none)
-                    .resizable()
-                    .aspectRatio(CGSize(width: 4, height: 3), contentMode: .fit)
-            } else {
-                TerminalWithToolbar(
-                    cells: $viewModel.terminalCells,
-                    cursorRow: $viewModel.cursorRow,
-                    cursorCol: $viewModel.cursorCol,
-                    shouldFocus: $viewModel.terminalShouldFocus,
-                    onKeyInput: { viewModel.sendKey($0) },
-                    onSetControlify: { viewModel.setControlify($0) },
-                    onScancode: { a, s in viewModel.sendDirectScancode(ascii: a, scancode: s) },
-                    onToggleFn: { viewModel.isFnActive.toggle() },
-                    onToggleAlt: { viewModel.isAltActive.toggle() },
-                    onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
-                    onViewCreated: { viewModel.terminalView = $0 },
-                    isControlifyActive: viewModel.isControlifyActive,
-                    isFnActive: viewModel.isFnActive,
-                    isAltActive: viewModel.isAltActive,
-                    rows: viewModel.terminalRows,
-                    cols: viewModel.terminalCols,
-                    fontSize: fontSize
-                )
+                if let gfxImg = viewModel.gfxImage {
+                    Image(uiImage: gfxImg)
+                        .interpolation(.none)
+                        .resizable()
+                        .aspectRatio(CGSize(width: 4, height: 3), contentMode: .fit)
+                } else {
+                    TerminalWithToolbar(
+                        cells: $viewModel.terminalCells,
+                        cursorRow: $viewModel.cursorRow,
+                        cursorCol: $viewModel.cursorCol,
+                        shouldFocus: $viewModel.terminalShouldFocus,
+                        onKeyInput: { viewModel.sendKey($0) },
+                        onSetControlify: { viewModel.setControlify($0) },
+                        onScancode: { a, s in viewModel.sendDirectScancode(ascii: a, scancode: s) },
+                        onToggleFn: { viewModel.isFnActive.toggle() },
+                        onToggleAlt: { viewModel.isAltActive.toggle() },
+                        onMouseUpdate: { x, y, btn in viewModel.sendMouseUpdate(x: x, y: y, buttons: btn) },
+                        onViewCreated: { viewModel.terminalView = $0 },
+                        isControlifyActive: viewModel.isControlifyActive,
+                        isFnActive: viewModel.isFnActive,
+                        isAltActive: viewModel.isAltActive,
+                        rows: viewModel.terminalRows,
+                        cols: viewModel.terminalCols,
+                        fontSize: fontSize
+                    )
+                }
+            }
+            .background(Color.black.ignoresSafeArea(.container, edges: .bottom))
+            .ignoresSafeArea(.keyboard)
+
+            // Loading overlay shown while disks are being loaded
+            if viewModel.isStarting {
+                Color.black.ignoresSafeArea()
+                    .overlay {
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(1.5)
+                            Text("Loading disks...")
+                                .foregroundColor(.white)
+                            Button("Cancel") { viewModel.cancelStart() }
+                                .foregroundColor(.red)
+                                .padding(.top, 8)
+                        }
+                    }
             }
         }
-        .background(Color.black.ignoresSafeArea(.container, edges: .bottom))
-        .ignoresSafeArea(.keyboard)
     }
 
     // MARK: - Settings View

@@ -1,0 +1,451 @@
+                    ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                    ³                              ³ ³
+                    ³                              ³ ³ ³
+                    ³        GOD OF THUNDER        ³ ³ ³
+                    ³   Copyright 1994, CSE Games  ³ ³ ³
+                    ³      All Rights Reserved     ³ ³ ³
+                    ³                              ³ ³ ³
+                    ³                              ³ ³ ³
+                    ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ ³ ³
+                      ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ ³
+                        ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+                 Published by Software Creations
+                 Re-Published by Impulse Games
+                 both those companies are dead,
+                 GOT is now FREEWARE!
+                 More classic games at:
+                 http://www.adeptsoftware.com/classics
+
+
+                         TABLE OF CONTENTS
+
+
+                        1.      Introduction
+                        2.      The Story
+                        3.      System Requirements
+                        4.      Starting the Game
+                        5.      The Main Menu
+                        6.      The Name Entry Screen
+                        7.      The Options Menu
+                        8.      Game Controls
+                        9.      The Status Panel
+                        10.     Playing the Game
+                        11.     Hints & Tips
+                        12.     Copyright Notice
+                        13.     Disclaimer
+                        14.     Ordering Information
+
+
+=============================================================================
+
+1. Introduction
+
+You are Thor, The God of Thunder!  Armed with only your enchanted hammer
+that always returns to the one who throws it, you must journey through
+dozens of puzzles and fight your way through hundreds of creatures highly
+motivated to stop you.  Along the way you will find several items that you'll
+need to complete your adventure.  Many items are not what you would
+expect to find in 927 A.D.  You will also encounter villages filled with
+goofy people who try to help you, but often just make you laugh with their
+hilarious responses.  At the end of each of the three parts, you will come
+face-to-face with an evil boss character, whom you must defeat to free the
+villagers from his tyranny!
+
+=============================================================================
+
+2. The Story
+
+Your father is Odin, the most powerful of the Norse Gods and ruler of Asgard.
+Odin must fall into a deep sleep (known as the Odinsleep) every few hundred
+centuries to rest, which rejuvenates his power.  Your half-brother is Loki,
+The God of Mischief.  Loki has seized the opportunity of this most recent
+Odinsleep and obtained the help of two of his most powerful allies to take
+control of Midgard (earth).
+
+Loki has established three centers of power on Midgard, from where he and his
+accomplices rule with an iron fist.  The first is in Spegville, where
+Jormangund (the Midgard Serpent), delights in terrorizing its innocent
+citizens.
+
+The second, in the town of Milgrund, is now under the control of Nognir,
+Prince of the Underworld.  Nognir keeps a firm grip on his subjects and
+runs his territory like a prison camp, complete with walled villages and
+locked gates.
+
+The third is in what used to be called Blechton.  This territory is ruled
+by Loki himself.  He has even changed the name of the town to Lokisburg.
+Its citizens are kept in constant fear of arrest for even the slightest
+infraction of any of Loki's long list of laws.
+
+Odin, upon awakening, learns of what has happened but has not yet recovered
+enough from his Odinsleep to challenge this terrible trio.  As his eldest
+son and the Prince of Asgard, he has called upon you to journey to Midgard
+and defeat Loki and his evil allies.
+
+=============================================================================
+
+3. System Requirements
+
+God of Thunder requires the following equipment:
+
+-  100% IBM compatible computer with an 80286, 80386, 80486 or
+   Pentium Processor
+-  VGA graphics card with at least 256KB of video memory
+-  VGA monitor
+-  A Hard disk drive with at least 1.2MB of available space
+-  510k of available RAM
+
+OPTIONAL:
+
+-  A Sound Blaster or compatible sound card for digitized sound effects and
+   full musical soundtrack
+-  An AdLib or compatible music card for full musical soundtrack
+-  A joystick in port #1
+
+=============================================================================
+
+4. Starting the Game
+
+To play God of Thunder (if it's installed in the default directory)
+type the following commands:
+
+1.  Type  C: and press [Enter]
+
+2.  Type  CD\GOT and press [Enter]
+
+3.  At the C:\GOT> prompt, type  GOT and press [Enter]
+
+Once you have followed the above instructions, you should see the Impulse
+Software logo appear on your screen.  If this is the first time you have
+played God of Thunder, sit back for a few minutes and watch a demonstration
+of how to play.  Press any key during the demo to go directly to the main
+menu.
+
+God of Thunder does a very good job of automatically detecting what type of
+equipment you have installed in your computer.  However, in some cases,
+certain types of equipment may cause problems with this detection. If you
+are having problems getting the game to run properly, try the following
+commands (in DOS at the C:\GOT>  prompt):
+
+GOT /NOAL        [Enter] If you don't have an Adlib or compatible card
+GOT /NOSB        [Enter] If you don't have a Sound Blaster or compatible card
+GOT /NOAL /NOSB  [Enter] If you have neither an Adlib or Sound Blaster card
+GOT /NOJOY       [Enter] If you don't have a joystick
+
+=============================================================================
+
+5. The Main Menu
+
+Once you're at the main menu, you will see a list of options that you
+can select.  Press the Up or Down arrow keys to move the rotating
+hammer to the option you wish to chose and press [Enter].
+
+The Main Menu options are:
+
+Play Game      - Start a new game or continue a saved game. Choosing this
+                 option will bring you to the Name Entry screen (see below).
+
+High Scores    - See the names of the people who have scored the most points.
+
+Credits        - See the names of the people who created God of Thunder.
+
+Demo           - View a demonstration of how to play.
+
+Ordering Info  - See how you can order the other two parts of the game.  You
+                 will only see this in the shareware version of the game.
+
+Quit           - Exit the program and return to DOS.
+
+You may also press the [Esc] key to exit the program and return to DOS.
+
+=============================================================================
+
+6. The Name Entry Screen
+
+When you select PLAY GAME from the Main Menu, you will be shown the Name
+Entry screen.  This is where you begin your game.  You must enter a name
+before you can start playing.  You do not have to enter your real name,
+however, this is the name that will appear in the High Score listing.
+You have up to five entries to put different names in.  This is useful if
+more than one person in your family wishes to play different games.
+
+Use the Up or Down arrow keys to select an entry and then press:
+
+[Enter]  - to enter your name in an empty entry, or continue a saved game
+           if the entry already has a name in it.
+
+[Insert] - to change the name that is already in an entry. This will not
+           affect the saved game itself, if there is one.
+
+[Delete] - To delete an entry. This will make room to enter another name.
+           THE SAVED GAME FOR THIS ENTRY WILL BE LOST! DO NOT SELECT THIS
+           OPTION UNLESS YOU ARE SURE YOU WON'T EVER WANT TO CONTINUE USING
+           THIS SAVED GAME.
+
+After entering your name and pressing [Enter], you will be asked if you
+are going to use a joystick.  Use the arrow keys to select 'Yes' or 'No'
+and then press [Enter].  If you selected 'Yes' you will be asked to push
+your joystick in a few different directions and press one of the joystick
+buttons.  When doing this, you must push AND HOLD the joystick in the
+proper direction and then press the joystick button.
+
+=============================================================================
+
+7. The Options Menu
+
+After a short pause, you will see the first screen that you will play.  If
+this is the first time you have played, the Options Menu will automatically
+be displayed.  The options in this menu are:
+
+Sound/Music  - Turn sound and music ON or OFF.
+
+Skill Level  - Make your enemies easier or harder than normal to fight.
+               This option does not directly affect the puzzle screens.
+
+Save Game    - Save your game, including your score, health, magic and
+               all the items you have acquired.  Only 1 saved game is allowed
+               per name. This option will save your game AS OF THE TIME
+               YOU FIRST WALKED ONTO THE CURRENT SCREEN!  If you enter a
+               particular screen, partially solve a puzzle, save your game,
+               and then later load that game, everything will be just as it
+               was when you first entered the screen.  If you have finished
+               a screen and wish to save your game, walk to the next screen
+               first or you will have to replay it.
+
+Load Game    - Load your last saved game.
+
+Die          - If you find yourself trapped in a puzzle, or you have been
+               damaged considerably by enemies, you can press the [D] key
+               to kill yourself.  This allows you to start the current
+               screen over again with your health, jewels, magic etc.
+               restored to what they were when you entered that screen.
+               You have an unlimited number of lives.
+
+Turbo Mode   - This option can be turned on when playing on a slower
+               computer (usually only needed on slow 80286's).  Turning
+               Turbo Mode ON will keep the action from slowing down on
+               these computers, but may cause some of the animation to
+               become more coarse.
+
+Help        -  Displays a list of keys you can press, along with their
+               meaning.
+
+Quit        -  Exit the game.  You will also be asked if you wish to save
+               your game.
+
+You may press [Esc] to erase the Options Menu and begin playing the game.
+You may also press [Esc] anytime during the game to display the Options
+Menu again.
+
+=============================================================================
+
+8. Game Controls
+
+During game play, use the four arrow keys to move Thor around the screen. If
+you are using a joystick, you may press it in any direction to move Thor.
+
+The following is a list of the keys that are used to play:
+
+Arrow Keys or Joystick -
+
+             Moves Thor around the screen.
+
+[Alt] or Joystick Button #1 -
+
+             Throws your hammer. You only have 1 hammer, so if your hammer
+             is already on the screen, this key will do nothing.
+             After your hammer hits something (a bush, an enemy, etc.) it
+             will turn around and come back to you.  It will return to you
+             no matter where you are on the screen, unless there is
+             something on the screen blocking its path.  There are times
+             when you will have to hit something with your hammer while it
+             is on its way back to you, so practice throwing it a little
+             and get to know how it works before you get too far into the
+             game.
+
+[Ctrl] or Joystick Button #2 -
+
+             Uses a magic item.  You start the game with no magic items.
+             You will have to find these items as you progress in the game.
+             Some items require you to press [Ctrl] just once to use them,
+             while others require you to hold [Ctrl] down the whole time
+             you wish to use it.
+
+[Space Bar] -
+
+             Displays all the items you currently have with you.
+             You may then use the arrow keys to highlight the item you wish
+             to use and press [Enter].  That item now becomes your current
+             item and you can use it by pressing [Ctrl] or joystick button
+             #2.  Your current item is always displayed in the lower right
+             corner of the Status Panel (see below). You can use any item
+             that you pick up, but be careful!  Not all items are intended
+             to be used by you, some must be given to other people.  Some
+             may even be harmful if used improperly!  But don't worry too
+             much, you have an unlimited number of lives in God of Thunder
+             so try to use everything you find at least once.
+
+[Esc]      - Displays the Options Menu (see above)
+
+=============================================================================
+
+9. The Status Panel
+
+The Status Panel is always displayed on the bottom portion of the screen.
+It contains the following information:
+
+Health Meter -
+
+             This displays the amount of health you currently have.  It
+             starts out as a long red bar and gets shorter every time you
+             get hit by an enemy or when an enemy shoots you.  Different
+             enemies take away different amounts of your health.  Some even
+             take it all!  When this red bar is completely gone, Thor dies
+             and you start over on the same screen that you died on.
+
+             You may pick up Golden Apples to restore your health and make
+             the red bar get longer.  There are also other ways to restore
+             your health, but you will discover them along the way.
+
+Magic Meter -
+
+            This displays the amount of magic you currently have.  It
+            works just like the Health Meter, but it is green and you
+            start out with no magic -- it must be found along the way.  You 
+            may pick up blue and red potions to increase your magic power. 
+            Using magic items takes some magic power away from you.
+
+Number of Jewels -
+
+            This displays the number of Jewels that you have found.  Thor
+            has some pretty deep pockets, but he can only carry 999 Jewels
+            at one time.  You will sometimes have to spend some of these
+            Jewels to progress in the game.
+
+Number of Keys -
+
+           This displays the number of Keys that you currently have with
+           you.  You will need these keys to unlock certain doors before you
+           can proceed.
+
+Current Item -
+
+           This is displayed in the upper right corner of the Status Panel
+           and shows you which item you will use if you press the [Ctrl] key
+           or press joystick button #2.
+
+
+Score -    This is your total score for this game.  You get points for killing
+           enemies, picking up trophies, etc.  You lose points for killing
+           innocent villagers.
+
+=============================================================================
+
+10. Playing the Game
+
+The object of God of Thunder is to find and defeat the Boss creature who
+is terrorizing villages of innocent people.  During your journey, you will
+come across hundreds of enemies that will try to stop you.  You will also
+meet many people who wish to help you.  When you meet someone who wishes
+to help you, just use the arrow keys to make Thor touch that person.  A
+dialog box will then appear and the villager will say something to you.
+Carefully read what he has to say -- some of this information will be vital
+to your completing the game!  You can tell your friends from your enemies
+easily because your friends don't chase you or shoot at you.
+
+Sometimes your friends will ask you questions.  When this happens, you will
+see a list of responses from which you can pick.  Use the arrow keys (or the
+joystick) to pick a response, just like you do in the menus.  Press [Enter]
+or either joystick button to select that response.  Sometimes your list
+of responses to a particular question will be different after you have
+completed certain tasks.  You can pick each response one-by-one to determine
+which response is correct.
+
+There are also dozens of puzzles to be solved before you reach the Boss
+character.  These puzzles usually involve pushing cement blocks or small
+logs to block the shots of enemies, touching certain glowing oracles
+to change your path on the screen, or finding keys to unlock doors.
+
+=============================================================================
+
+11. Hints & Tips
+
+* Always try to pick up everything you see.  There may be a few items that
+  will harm you, so be careful!
+
+* If you find yourself getting creamed by enemies on a particular screen,
+  press [D] to die and start the screen over.  This will restore your health,
+  magic, etc. to what is was when you entered that screen.  WHATEVER YOU DO,
+  DON'T RUN OFF THE SCREEN OR YOU WILL BE STUCK WITH WHAT LITTLE HEALTH YOU
+  HAVE LEFT!
+
+* Enemies will reappear when you leave a screen and then come back to it.
+  You can use this to your advantage to quickly accumulate health, jewels,
+  etc..
+
+* If you get to the point in a village where you don't know what to do
+  next, go talk to people you have already talked to.  Some people say
+  different things when you talk to them twice.
+
+* Don't feel like you must always kill everything on a screen.  Discretion
+  is indeed sometimes the better part of valor.
+
+* God of Thunder was designed so it would be very difficult, if not
+  impossible, to mess anything up to a point where you have to reload
+  a saved game because you gave an item to the wrong person, forgot to pick
+  something up 10 screens back, etc..  But beware!  You could find yourself
+  facing a horde of enemies when you have very little health, so save your
+  game every few screens, especially when you find a way to fill up on
+  health or magic.
+
+* If you find yourself stumped on a puzzle screen, don't give up!  Go do
+  something else for a while, and come back to it later. You could also
+  ask a friend to look at it.  Sometimes a new set of eyes can see something
+  that you are missing.  You can also order a hint book.  All of the puzzles
+  in God of Thunder ARE possible.
+
+* Each boss character has a weak spot, or is vulnerable to a particular
+  weapon.  Try to hit him in different places on his body, and try
+  each of your weapons.  You can change the skill level if you find them
+  too difficult to beat.
+
+============================================================================
+
+12. Copyright Notice
+
+This program is a product of CSE Games.  It is protected by
+United States copyright laws and international treaty provisions.
+You may NOT modify or create derivative works based on this program
+or any of the information that is contained within it.  You may NOT
+sell, lease, rent or perform any modifications that might otherwise
+convert the original contents, performance or concept that was
+intended by the copyright holder of this software package.
+
+============================================================================
+
+13. Disclaimer
+
+The author and publisher of this program make no warranty of any
+kind either expressed or implied.  In particular we make no
+warranty as to correctness or fitness for a particular purpose.
+
+In no event shall the author or publisher be liable for any errors
+contained herein or for incidental or consequential damages in
+connection with the furnishing, performance, or use of this product
+or documentation.
+
+This document contains proprietary information which is protected
+by copyright.  No part of this document may be photocopied,
+reproduced, or translated without the prior written consent of the
+owner.
+
+The information in this document is subject to change without
+notice.
+
+============================================================================
+
+14. Ordering Information
+
+God of Thunder is now Freeware!
+Ignore any messages about ordering.

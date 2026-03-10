@@ -1,0 +1,55 @@
+                            *******************
+                            * TROUBLESHOOTING *
+                            *******************
+PROBLEM:
+     Not Enough Memory
+SOLUTION:
+     Try removing TSR's (such as mouse drivers) from your config.sys and
+     autoexec.bat files.
+     If you have DOS version 5 or above, include the line:
+
+          dos=high
+
+     in your config.sys file after "himem.sys" or another memory manager has
+     been loaded.
+
+
+PROBLEM:
+     Sound isn't working correctly, or the game locks up
+SOLUTION:
+     Use the command-line sound card override.
+     Load God of Thunder with one of the command-line options:
+
+          GOT /NOSB      -    If you DO NOT have a Soundblaster card.
+          GOT /NOAL      -    If you DO NOT have an Adlib Card.
+          GOT /NOJOY     -    If you DO NOT have a joystick.
+
+SOUND BLASTER HELP
+------------------
+If your Sound Blaster or compatible card is not working in God of Thunder,
+try setting the environmental variable BLASTER by typing:
+
+     SET BLASTER=Axxx Ix Dx
+
+     Axxx represents the address of the SoundBlaster/SB Pro.  For the SB,
+          it's either A210,A220,A230,A240,A250 or A260.  For the SB Pro, 
+          it's either A220 or A240.  The default is A220.
+     
+       Ix represents the IRQ number used by the SB/SB Pro.  For the SB, it's
+          either I2, I5, or I7.  The default is I7.
+
+       Dx represents the DMA channel used by the SB/SB Pro.  Acceptable
+          values are D0, D1, or D3.  The default is D1.
+
+    You can also run the included "SETBLAST" program. This program will set
+    the environment variable for you.
+
+If the game continually locks up and you have a Sound Blaster, as a last
+resort try disabling the digitized Sound Blaster samples by using the Adlib
+command-line override (GOT /NOSB).
+
+God of Thunder should have come without the configuration file "CONFIG.GOT".  
+If you can't solve the problems you are having, try erasing this file.  
+God of Thunder will create a new config file based on your system.
+
+

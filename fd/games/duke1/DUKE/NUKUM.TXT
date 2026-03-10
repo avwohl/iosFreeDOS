@@ -1,0 +1,19 @@
+A special note about this version of the game:
+(Duke Nukum v2.0 - This is not Duke Nukem II)
+
+There is frequently a great deal of confusion over the 
+correct spelling of one of Apogee's most prized characters, 
+Duke Nukem.  The original spelling for the name was "Duke 
+Nukem"; however, during the code fix stage between v1.0 and
+v2.0 of the original game, Apogee found a character overseas 
+named "Duke Nukem" that was thought to be copyrighted.  So, 
+for v2.0 of the original Duke game, the name was changed to 
+"Duke Nukum."  Then, during the programming of Duke II, it 
+was discovered that the character they found overseas was 
+not copyrighted after all -- and so the original name was 
+reinstated.  "Duke Nukem" is also the spelling used in all 
+successive games that featured the character.
+
+The spellings "Duke Nuke 'em," "Duke Nuke'um," "Duke 
+Nuke'm," "Duke Nuk'em" and other variations are not, and 
+were never, correct.

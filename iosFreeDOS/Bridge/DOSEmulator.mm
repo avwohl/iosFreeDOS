@@ -285,6 +285,10 @@ private:
 //=============================================================================
 
 static uint8_t ascii_to_scancode(uint8_t ascii) {
+    // Control characters (Ctrl+A=1 through Ctrl+Z=26): use the letter's scancode
+    if (ascii >= 1 && ascii <= 26) {
+        return ascii_to_scancode('a' + ascii - 1);
+    }
     if (ascii >= 'a' && ascii <= 'z') {
         static const uint8_t sc[] = {
             0x1E,0x30,0x2E,0x20,0x12,0x21,0x22,0x23,0x17,0x24,
@@ -512,9 +516,8 @@ static uint8_t ascii_to_scancode(uint8_t ascii) {
                     [d emulatorDidRequestInput];
                 });
             }
-            // Idle at prompt: sleep 10ms for responsive key echo.
-            // DOSBox uses 1ms; 10ms balances responsiveness vs battery.
-            [NSThread sleepForTimeInterval:0.010];
+            // Idle at prompt: sleep 1ms for responsive key echo (matches DOSBox).
+            [NSThread sleepForTimeInterval:0.001];
             batch_wall_start = mach_absolute_time();
             batch_cycle_start = _machine->cycles;
         } else if (cps == 0) {
