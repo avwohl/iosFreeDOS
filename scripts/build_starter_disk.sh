@@ -208,6 +208,12 @@ if [ -f "$IMGDIR/dos/r.com" ]; then
     echo "Installed R.COM and W.COM"
 fi
 
+# Install DPMITEST.COM
+if [ -f "$IMGDIR/dos/dpmitest.com" ]; then
+    mcopy -D o "$IMGDIR/dos/dpmitest.com" "c:/DPMITEST.COM"
+    echo "Installed DPMITEST.COM"
+fi
+
 # =========================================================================
 # 7. Install DOOM shareware
 # =========================================================================
