@@ -946,17 +946,20 @@ void emu88::raise_exception(emu88_uint8 vector, emu88_uint32 error_code) {
   exception_pending = true;
 
   if (in_exception) {
-    // Double fault → if another exception during #DF, triple fault
-    if (vector == 8) {
+    // Exception during double fault dispatch → triple fault
+    if (in_double_fault) {
       triple_fault();
       return;
     }
-    in_exception = false;
+    // First exception during exception dispatch → double fault (#DF)
+    in_double_fault = true;
     if (protected_mode()) {
       do_interrupt_pm(8, true, 0);  // #DF with error code 0
     } else {
       do_interrupt(8);
     }
+    in_double_fault = false;
+    in_exception = false;
     return;
   }
 
@@ -981,12 +984,18 @@ void emu88::raise_exception_no_error(emu88_uint8 vector) {
   exception_pending = true;
 
   if (in_exception) {
-    in_exception = false;
+    if (in_double_fault) {
+      triple_fault();
+      return;
+    }
+    in_double_fault = true;
     if (protected_mode()) {
       do_interrupt_pm(8, true, 0);  // #DF
     } else {
       do_interrupt(8);
     }
+    in_double_fault = false;
+    in_exception = false;
     return;
   }
   in_exception = true;

@@ -136,6 +136,7 @@ public:
 
   // Exception state (to detect double/triple faults)
   bool in_exception;
+  bool in_double_fault;
   bool exception_pending;  // Set by raise_exception to abort current instruction
 
   // Segment override state (per-instruction)

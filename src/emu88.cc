@@ -71,6 +71,7 @@ void emu88::reset(void) {
   halted = false;
   int_pending = false;
   in_exception = false;
+  in_double_fault = false;
   exception_pending = false;
   cycles = 0;
   op_size_32 = false;
