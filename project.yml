@@ -18,6 +18,8 @@ targets:
         excludes:
           - main_cli.cc
           - test_emu88.cc
+          - test_8088_sst.cc
+          - test_8088_sst.h
           - debug_boot.cc
     configFiles:
       Debug: Config.xcconfig
