@@ -7,16 +7,16 @@ SRCDIR = src
 OBJDIR = obj
 
 # Core CPU emulator
-CORE_SOURCES = $(SRCDIR)/emu88.cc $(SRCDIR)/emu88_mem.cc
-CORE_OBJECTS = $(OBJDIR)/emu88.o $(OBJDIR)/emu88_mem.o
+CORE_SOURCES = $(SRCDIR)/emu88.cc $(SRCDIR)/emu88_mem.cc $(SRCDIR)/emu88_pmode.cc
+CORE_OBJECTS = $(OBJDIR)/emu88.o $(OBJDIR)/emu88_mem.o $(OBJDIR)/emu88_pmode.o
 
 # DOS machine layer
 DOS_SOURCES = $(SRCDIR)/dos_machine.cc $(SRCDIR)/dos_bios.cc $(SRCDIR)/ne2000.cc
 DOS_OBJECTS = $(OBJDIR)/dos_machine.o $(OBJDIR)/dos_bios.o $(OBJDIR)/ne2000.o
 
 # Test
-TEST_SOURCES = $(SRCDIR)/test_emu88.cc
-TEST_OBJECTS = $(OBJDIR)/test_emu88.o
+TEST_SOURCES = $(SRCDIR)/test_emu88.cc $(SRCDIR)/test_8088_sst.cc
+TEST_OBJECTS = $(OBJDIR)/test_emu88.o $(OBJDIR)/test_8088_sst.o
 
 # CLI harness
 CLI_SOURCES = $(SRCDIR)/main_cli.cc
