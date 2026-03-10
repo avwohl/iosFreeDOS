@@ -1017,6 +1017,7 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
   switch (mr.reg_field) {
   case 0: case 1: { // TEST r/m8, imm8
     emu88_uint8 imm = fetch_ip_byte();
+    if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); return; }
     set_flags_logic8(val & imm);
     break;
   }
@@ -1108,6 +1109,7 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
   switch (mr.reg_field) {
   case 0: case 1: { // TEST r/m16, imm16
     emu88_uint16 imm = fetch_ip_word();
+    if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); return; }
     set_flags_logic16(val & imm);
     break;
   }
@@ -1437,6 +1439,7 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
   // 286 real mode: word/dword accesses wrap at segment boundary instead of faulting.
   // The instruction completes with wrapping, then #GP(0) fires post-execution.
   bool str_boundary_crossed = false;
+  bool str_boundary_dst = false;  // true if dest operand crossed (needs extra REP iter)
   auto str_fetch_word = [&](emu88_uint16 seg, emu88_uint32 off) -> emu88_uint16 {
     if (!lock_ud && (off & 0xFFFF) == 0xFFFF) {
       str_boundary_crossed = true;
@@ -1498,7 +1501,7 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         if (exception_pending) break;
         add_di(dir * 2);
       }
-      if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+      if (str_boundary_crossed) str_boundary_dst = true;
       break;
     }
     case 0x6E: { // OUTSB (80186+)
@@ -1524,7 +1527,7 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         port_out(regs[reg_DX], (val >> 8) & 0xFF);
         add_si(dir * 2);
       }
-      if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+      // str_boundary_crossed left set for caller to handle
       break;
     }
     case 0xA4: { // MOVSB
@@ -1543,24 +1546,24 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         if (exception_pending) break;
         bool src_crossed = str_boundary_crossed;
         add_si(dir * 4);
-        if (src_crossed) { ip = insn_ip; raise_exception(13, 0); break; }
+        if (src_crossed) { str_boundary_crossed = true; break; }
         str_boundary_crossed = false;
         str_store_dword(sregs[seg_ES], get_di(), val);
         if (exception_pending) break;
         add_di(dir * 4);
-        if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+        // str_boundary_crossed left set if dest crossed
       } else {
         str_boundary_crossed = false;
         emu88_uint16 val = str_fetch_word(string_src_seg(), get_si());
         if (exception_pending) break;
         bool src_crossed = str_boundary_crossed;
         add_si(dir * 2);
-        if (src_crossed) { ip = insn_ip; raise_exception(13, 0); break; }
+        if (src_crossed) { str_boundary_crossed = true; str_boundary_dst = false; break; }
         str_boundary_crossed = false;
         str_store_word(sregs[seg_ES], get_di(), val);
         if (exception_pending) break;
         add_di(dir * 2);
-        if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+        if (str_boundary_crossed) str_boundary_dst = true;
       }
       break;
     }
@@ -1580,27 +1583,41 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         emu88_uint32 src = str_fetch_dword(string_src_seg(), get_si());
         if (exception_pending) break;
         bool src_crossed = str_boundary_crossed;
-        add_si(dir * 4);
-        if (src_crossed) { ip = insn_ip; raise_exception(13, 0); break; }
         str_boundary_crossed = false;
         emu88_uint32 dst = str_fetch_dword(sregs[seg_ES], get_di());
         if (exception_pending) break;
-        alu_sub32(src, dst, 0);
-        add_di(dir * 4);
-        if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+        bool dst_crossed = str_boundary_crossed;
+        if (dst_crossed) {
+          add_di(dir * 4);
+          ip = insn_ip; raise_exception(13, 0);
+        } else if (src_crossed) {
+          add_si(dir * 4); add_di(dir * 4);
+          ip = insn_ip; raise_exception(13, 0);
+        } else {
+          alu_sub32(src, dst, 0);
+          add_si(dir * 4); add_di(dir * 4);
+        }
       } else {
         str_boundary_crossed = false;
         emu88_uint16 src = str_fetch_word(string_src_seg(), get_si());
         if (exception_pending) break;
         bool src_crossed = str_boundary_crossed;
-        add_si(dir * 2);
-        if (src_crossed) { ip = insn_ip; raise_exception(13, 0); break; }
         str_boundary_crossed = false;
         emu88_uint16 dst = str_fetch_word(sregs[seg_ES], get_di());
         if (exception_pending) break;
-        alu_sub16(src, dst, 0);
-        add_di(dir * 2);
-        if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+        bool dst_crossed = str_boundary_crossed;
+        if (dst_crossed) {
+          add_di(dir * 2);
+          str_boundary_crossed = true;
+          str_boundary_dst = true;
+        } else if (src_crossed) {
+          add_si(dir * 2); add_di(dir * 2);
+          str_boundary_crossed = true;
+          str_boundary_dst = false;
+        } else {
+          alu_sub16(src, dst, 0);
+          add_si(dir * 2); add_di(dir * 2);
+        }
       }
       break;
     }
@@ -1621,7 +1638,7 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         if (exception_pending) break;
         add_di(dir * 2);
       }
-      if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+      if (str_boundary_crossed) str_boundary_dst = true;
       break;
     }
     case 0xAC: { // LODSB
@@ -1636,16 +1653,16 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         str_boundary_crossed = false;
         emu88_uint32 val = str_fetch_dword(string_src_seg(), get_si());
         if (exception_pending) break;
-        set_reg32(reg_AX, val);
+        if (!str_boundary_crossed) set_reg32(reg_AX, val);
         add_si(dir * 4);
       } else {
         str_boundary_crossed = false;
         emu88_uint16 val = str_fetch_word(string_src_seg(), get_si());
         if (exception_pending) break;
-        regs[reg_AX] = val;
+        if (!str_boundary_crossed) regs[reg_AX] = val;
         add_si(dir * 2);
       }
-      if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
+      // str_boundary_crossed left set for caller to handle
       break;
     }
     case 0xAE: { // SCASB
@@ -1660,16 +1677,16 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
         str_boundary_crossed = false;
         emu88_uint32 val = str_fetch_dword(sregs[seg_ES], get_di());
         if (exception_pending) break;
-        alu_sub32(get_reg32(reg_AX), val, 0);
+        if (!str_boundary_crossed) alu_sub32(get_reg32(reg_AX), val, 0);
         add_di(dir * 4);
       } else {
         str_boundary_crossed = false;
         emu88_uint16 val = str_fetch_word(sregs[seg_ES], get_di());
         if (exception_pending) break;
-        alu_sub16(regs[reg_AX], val, 0);
+        if (!str_boundary_crossed) alu_sub16(regs[reg_AX], val, 0);
+        else str_boundary_dst = true;
         add_di(dir * 2);
       }
-      if (str_boundary_crossed) { ip = insn_ip; raise_exception(13, 0); }
       break;
     }
     }
@@ -1677,10 +1694,37 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
 
   if (rep_prefix == REP_NONE) {
     do_one();
+    // 286 boundary crossing: fire exception for non-REP
+    if (!lock_ud && str_boundary_crossed && !exception_pending) {
+      ip = insn_ip;
+      raise_exception(13, 0);
+    }
   } else {
     while (get_cx() != 0) {
+      str_boundary_dst = false;
       do_one();
       if (exception_pending) break;
+      // 286 boundary crossing in REP
+      if (!lock_ud && str_boundary_crossed) {
+        bool is_compare = (opcode == 0xA6 || opcode == 0xA7 || opcode == 0xAE || opcode == 0xAF);
+        if (is_compare) {
+          dec_cx();
+          cycles += 17;
+          ip = insn_ip;
+          raise_exception(13, 0);
+          break;
+        }
+        dec_cx();
+        cycles += 17;
+        if (str_boundary_dst) {
+          // Dest crossing: extra CX decrement without running another iteration
+          dec_cx();
+          cycles += 17;
+        }
+        ip = insn_ip;
+        raise_exception(13, 0);
+        break;
+      }
       dec_cx();
       cycles += 17;
       if (opcode == 0xA6 || opcode == 0xA7 || opcode == 0xAE || opcode == 0xAF) {
@@ -1809,23 +1853,27 @@ void emu88::execute(void) {
   // Handle prefix bytes
   bool lock_prefix = false;
   bool prefix_done = false;
+  int prefix_count = 0;
   while (!prefix_done) {
     emu88_uint8 prefix = fetch_byte(sregs[seg_CS], ip);
     switch (prefix) {
-    case 0x26: seg_override = seg_ES; ip++; break;
-    case 0x2E: seg_override = seg_CS; ip++; break;
-    case 0x36: seg_override = seg_SS; ip++; break;
-    case 0x3E: seg_override = seg_DS; ip++; break;
-    case 0x64: seg_override = seg_FS; ip++; break;
-    case 0x65: seg_override = seg_GS; ip++; break;
-    case 0x66: op_size_32 = !op_size_32; ip++; break;   // toggle operand size
-    case 0x67: addr_size_32 = !addr_size_32; ip++; break; // toggle address size
-    case 0xF0: lock_prefix = true; ip++; break;  // LOCK prefix
-    case 0xF2: rep_prefix = REP_REPNZ; ip++; break;
-    case 0xF3: rep_prefix = REP_REPZ; ip++; break;
+    case 0x26: seg_override = seg_ES; ip++; prefix_count++; break;
+    case 0x2E: seg_override = seg_CS; ip++; prefix_count++; break;
+    case 0x36: seg_override = seg_SS; ip++; prefix_count++; break;
+    case 0x3E: seg_override = seg_DS; ip++; prefix_count++; break;
+    case 0x64: seg_override = seg_FS; ip++; prefix_count++; break;
+    case 0x65: seg_override = seg_GS; ip++; prefix_count++; break;
+    case 0x66: op_size_32 = !op_size_32; ip++; prefix_count++; break;   // toggle operand size
+    case 0x67: addr_size_32 = !addr_size_32; ip++; prefix_count++; break; // toggle address size
+    case 0xF0: lock_prefix = true; ip++; prefix_count++; break;  // LOCK prefix
+    case 0xF2: rep_prefix = REP_REPNZ; ip++; prefix_count++; break;
+    case 0xF3: rep_prefix = REP_REPZ; ip++; prefix_count++; break;
     default: prefix_done = true; break;
     }
   }
+
+  // Save prefix count for 286 instruction length check
+  emu88_uint32 ip_after_prefixes = ip;
 
   emu88_uint8 opcode = fetch_ip_byte();
   cycles += base_cycles[opcode];
@@ -2204,8 +2252,15 @@ void emu88::execute(void) {
   case 0x81: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
-    if (op_size_32) execute_grp1_rm32(mr, fetch_ip_dword());
-    else execute_grp1_rm16(mr, fetch_ip_word());
+    if (op_size_32) {
+      emu88_uint32 imm = fetch_ip_dword();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
+      execute_grp1_rm32(mr, imm);
+    } else {
+      emu88_uint16 imm = fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
+      execute_grp1_rm16(mr, imm);
+    }
     break;
   }
 
@@ -2418,10 +2473,12 @@ void emu88::execute(void) {
     if (op_size_32) {
       emu88_uint32 off = fetch_ip_dword();
       emu88_uint16 seg = fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
       far_call_or_jmp(seg, off, true);
     } else {
       emu88_uint16 off = fetch_ip_word();
       emu88_uint16 seg = fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
       far_call_or_jmp(seg, off, true);
     }
     break;
@@ -2659,7 +2716,9 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     if (mr.reg_field != 0) { raise_exception_no_error(6); break; }
-    set_rm8(mr, fetch_ip_byte());
+    emu88_uint8 imm = fetch_ip_byte();
+    if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
+    set_rm8(mr, imm);
     break;
   }
 
@@ -2668,8 +2727,15 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     if (mr.reg_field != 0) { raise_exception_no_error(6); break; }
-    if (op_size_32) set_rm32(mr, fetch_ip_dword());
-    else set_rm16(mr, fetch_ip_word());
+    if (op_size_32) {
+      emu88_uint32 imm = fetch_ip_dword();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
+      set_rm32(mr, imm);
+    } else {
+      emu88_uint16 imm = fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
+      set_rm16(mr, imm);
+    }
     break;
   }
 
@@ -2966,6 +3032,11 @@ void emu88::execute(void) {
   case 0xD4: {
     emu88_uint8 base = fetch_ip_byte();  // usually 0x0A
     if (base == 0) {
+      // 286: AAM 0 modifies flags before firing #DE
+      clear_flag(FLAG_CF); clear_flag(FLAG_OF);
+      clear_flag(FLAG_SF); clear_flag(FLAG_ZF); clear_flag(FLAG_AF);
+      set_flag_val(FLAG_PF, parity_table[get_reg8(reg_AL)]);
+      ip = insn_ip;
       do_interrupt(0);
       break;
     }
@@ -3161,10 +3232,12 @@ void emu88::execute(void) {
     if (op_size_32) {
       emu88_uint32 off = fetch_ip_dword();
       emu88_uint16 seg = fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
       far_call_or_jmp(seg, off, false);
     } else {
       emu88_uint16 off = fetch_ip_word();
       emu88_uint16 seg = fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
       far_call_or_jmp(seg, off, false);
     }
     break;
@@ -3312,16 +3385,30 @@ void emu88::execute(void) {
       push_dword(get_reg32(reg_SI));
       push_dword(get_reg32(reg_DI));
     } else {
-      emu88_uint16 tmp_sp = regs[reg_SP];
-      push_word(regs[reg_AX]);
-      push_word(regs[reg_CX]);
-      push_word(regs[reg_DX]);
-      push_word(regs[reg_BX]);
-      push_word(tmp_sp);
-      push_word(regs[reg_BP]);
-      push_word(regs[reg_SI]);
-      push_word(regs[reg_DI]);
+      // 286: pre-check if any push would cross segment boundary
+      if (!lock_ud) {
+        for (int k = 1; k <= 8; k++) {
+          emu88_uint16 addr = regs[reg_SP] - 2 * k;
+          if (addr == 0xFFFF) {
+            ip = insn_ip;
+            raise_exception(13, 0);
+            goto pusha_done;
+          }
+        }
+      }
+      {
+        emu88_uint16 tmp_sp = regs[reg_SP];
+        push_word(regs[reg_AX]);
+        push_word(regs[reg_CX]);
+        push_word(regs[reg_DX]);
+        push_word(regs[reg_BX]);
+        push_word(tmp_sp);
+        push_word(regs[reg_BP]);
+        push_word(regs[reg_SI]);
+        push_word(regs[reg_DI]);
+      }
     }
+    pusha_done:
     break;
   }
 
@@ -3338,16 +3425,30 @@ void emu88::execute(void) {
       v = pop_dword(); if (exception_pending) break; set_reg32(reg_CX, v);
       v = pop_dword(); set_reg32(reg_AX, v);
     } else {
-      emu88_uint16 v;
-      v = pop_word(); if (exception_pending) break; regs[reg_DI] = v;
-      v = pop_word(); if (exception_pending) break; regs[reg_SI] = v;
-      v = pop_word(); if (exception_pending) break; regs[reg_BP] = v;
-      pop_word(); if (exception_pending) break;
-      v = pop_word(); if (exception_pending) break; regs[reg_BX] = v;
-      v = pop_word(); if (exception_pending) break; regs[reg_DX] = v;
-      v = pop_word(); if (exception_pending) break; regs[reg_CX] = v;
-      v = pop_word(); regs[reg_AX] = v;
+      // 286: pre-check if any pop would cross segment boundary
+      if (!lock_ud) {
+        for (int k = 0; k < 8; k++) {
+          emu88_uint16 addr = regs[reg_SP] + 2 * k;
+          if (addr == 0xFFFF) {
+            ip = insn_ip;
+            raise_exception(13, 0);
+            goto popa_done;
+          }
+        }
+      }
+      {
+        emu88_uint16 v;
+        v = pop_word(); if (exception_pending) break; regs[reg_DI] = v;
+        v = pop_word(); if (exception_pending) break; regs[reg_SI] = v;
+        v = pop_word(); if (exception_pending) break; regs[reg_BP] = v;
+        pop_word(); if (exception_pending) break;
+        v = pop_word(); if (exception_pending) break; regs[reg_BX] = v;
+        v = pop_word(); if (exception_pending) break; regs[reg_DX] = v;
+        v = pop_word(); if (exception_pending) break; regs[reg_CX] = v;
+        v = pop_word(); regs[reg_AX] = v;
+      }
     }
+    popa_done:
     break;
   }
 
@@ -3410,6 +3511,7 @@ void emu88::execute(void) {
       emu88_int32 src = (emu88_int32)get_rm32(mr);
       if (exception_pending) break;
       emu88_int32 imm = (emu88_int32)fetch_ip_dword();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
       emu88_int64 result = (emu88_int64)src * (emu88_int64)imm;
       set_reg32(mr.reg_field, (emu88_uint32)result);
       set_flag_val(FLAG_CF, result != (emu88_int32)result);
@@ -3422,6 +3524,7 @@ void emu88::execute(void) {
       emu88_int16 src = (emu88_int16)get_rm16(mr);
       if (exception_pending) break;
       emu88_int16 imm = (emu88_int16)fetch_ip_word();
+      if (!lock_ud && (ip - insn_ip) > 10) { ip = insn_ip; raise_exception(13, 0); break; }
       emu88_int32 result = (emu88_int32)src * (emu88_int32)imm;
       regs[mr.reg_field] = (emu88_uint16)result;
       set_flag_val(FLAG_CF, result != (emu88_int16)result);
@@ -3500,25 +3603,81 @@ void emu88::execute(void) {
       if (stack_32()) set_esp(get_esp() - alloc_size);
       else regs[reg_SP] -= alloc_size;
     } else {
-      // Probe final SP for write access
-      emu88_uint16 total_push = (nesting > 0) ? 2 * (nesting + 1) : 2;
-      emu88_uint16 final_sp = regs[reg_SP] - total_push - alloc_size;
-      if (!check_segment_write(sregs[seg_SS], final_sp, 1)) break;
-      if (paging_enabled()) {
-        translate_linear(effective_address(sregs[seg_SS], final_sp), true);
-        if (exception_pending) break;
-      }
-      push_word(regs[reg_BP]);
-      emu88_uint16 frame_ptr = regs[reg_SP];
-      if (nesting > 0) {
-        for (int i = 1; i < nesting; i++) {
-          regs[reg_BP] -= 2;
-          push_word(fetch_word(sregs[seg_SS], regs[reg_BP]));
+      // Probe final SP for write access (protected mode only)
+      if (protected_mode()) {
+        emu88_uint16 total_push = (nesting > 0) ? 2 * (nesting + 1) : 2;
+        emu88_uint16 final_sp = regs[reg_SP] - total_push - alloc_size;
+        if (!check_segment_write(sregs[seg_SS], final_sp, 1)) break;
+        if (paging_enabled()) {
+          translate_linear(effective_address(sregs[seg_SS], final_sp), true);
+          if (exception_pending) break;
         }
-        push_word(frame_ptr);
       }
-      regs[reg_BP] = frame_ptr;
-      regs[reg_SP] -= alloc_size;
+      {
+        // Save registers for 286 post-execution exception on ENTER
+        emu88_uint16 saved_sp = regs[reg_SP];
+        emu88_uint16 saved_bp = regs[reg_BP];
+        bool enter_boundary = false;
+
+        // 286: check if initial push BP crosses boundary
+        if (!lock_ud && (emu88_uint16)(regs[reg_SP] - 2) == 0xFFFF) {
+          // Wrapped push at boundary
+          store_byte(sregs[seg_SS], 0xFFFF, regs[reg_BP] & 0xFF);
+          store_byte(sregs[seg_SS], 0x0000, (regs[reg_BP] >> 8) & 0xFF);
+          regs[reg_SP] -= 2;
+          enter_boundary = true;
+        } else {
+          push_word(regs[reg_BP]);
+        }
+
+        emu88_uint16 frame_ptr = regs[reg_SP];
+        if (!enter_boundary && nesting > 0) {
+          for (int i = 1; i < nesting; i++) {
+            regs[reg_BP] -= 2;
+            // 286: check fetch boundary
+            emu88_uint16 bp_val;
+            if (!lock_ud && regs[reg_BP] == 0xFFFF) {
+              emu88_uint8 lo = fetch_byte(sregs[seg_SS], 0xFFFF);
+              emu88_uint8 hi = fetch_byte(sregs[seg_SS], 0x0000);
+              bp_val = lo | ((emu88_uint16)hi << 8);
+              enter_boundary = true;
+            } else {
+              bp_val = fetch_word(sregs[seg_SS], regs[reg_BP]);
+            }
+            // 286: check push boundary
+            if (!lock_ud && (emu88_uint16)(regs[reg_SP] - 2) == 0xFFFF) {
+              store_byte(sregs[seg_SS], 0xFFFF, bp_val & 0xFF);
+              store_byte(sregs[seg_SS], 0x0000, (bp_val >> 8) & 0xFF);
+              regs[reg_SP] -= 2;
+              enter_boundary = true;
+            } else {
+              push_word(bp_val);
+            }
+            if (enter_boundary) break;
+          }
+          if (!enter_boundary) {
+            // Push frame_ptr
+            if (!lock_ud && (emu88_uint16)(regs[reg_SP] - 2) == 0xFFFF) {
+              store_byte(sregs[seg_SS], 0xFFFF, frame_ptr & 0xFF);
+              store_byte(sregs[seg_SS], 0x0000, (frame_ptr >> 8) & 0xFF);
+              regs[reg_SP] -= 2;
+              enter_boundary = true;
+            } else {
+              push_word(frame_ptr);
+            }
+          }
+        }
+        if (enter_boundary) {
+          // Restore registers, keep memory writes, fire exception
+          regs[reg_SP] = saved_sp;
+          regs[reg_BP] = saved_bp;
+          ip = insn_ip;
+          raise_exception(13, 0);
+        } else {
+          regs[reg_BP] = frame_ptr;
+          regs[reg_SP] -= alloc_size;
+        }
+      }
     }
     break;
   }
