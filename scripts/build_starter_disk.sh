@@ -194,7 +194,7 @@ PROMPT $P$G
 IF NOT EXIST C:\TEMP\NUL MD C:\TEMP
 C:\FREEDOS\BIN\CWSDPMI -p
 ECHO.
-ECHO Type DOOM to play DOOM, or DUKE to play Duke Nukem.
+ECHO Type DOOM to play DOOM (VGA), or DUKE to play Duke Nukem (EGA).
 ECHO.
 BATEOF
 mcopy -D o /tmp/AUTOEXEC.BAT c:

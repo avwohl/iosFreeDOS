@@ -1,5 +1,6 @@
 #include "emu88_mem.h"
 #include <cstring>
+#include <cstdio>
 
 emu88_mem::emu88_mem(emu88_uint32 size)
     : dat(nullptr), mem_size(size), a20_enabled(false) {
@@ -13,11 +14,21 @@ emu88_mem::~emu88_mem() {
 }
 
 emu88_uint8 emu88_mem::fetch_mem(emu88_uint32 addr) {
-  return dat[mask_addr(addr)];
+  emu88_uint32 masked = mask_addr(addr);
+  if (masked >= mem_size) {
+    fprintf(stderr, "[MEM] fetch_mem OOB: addr=0x%08X masked=0x%08X mem_size=0x%08X\n", addr, masked, mem_size);
+    return 0xFF;
+  }
+  return dat[masked];
 }
 
 void emu88_mem::store_mem(emu88_uint32 addr, emu88_uint8 abyte) {
-  dat[mask_addr(addr)] = abyte;
+  emu88_uint32 masked = mask_addr(addr);
+  if (masked >= mem_size) {
+    fprintf(stderr, "[MEM] store_mem OOB: addr=0x%08X masked=0x%08X mem_size=0x%08X\n", addr, masked, mem_size);
+    return;
+  }
+  dat[masked] = abyte;
 }
 
 emu88_uint16 emu88_mem::fetch_mem16(emu88_uint32 addr) {
