@@ -25,19 +25,25 @@ emu88::emu88(emu88_mem *memory)
     int_pending(false),
     int_vector(0),
     halted(false),
+    in_exception(false),
     seg_override(-1),
     rep_prefix(REP_NONE),
     op_size_32(false),
     addr_size_32(false),
     gdtr_base(0), gdtr_limit(0),
     idtr_base(0), idtr_limit(0x3FF),
-    cr0(0) {
+    cr0(0), cr2(0), cr3(0), cr4(0),
+    ldtr(0), tr(0), cpl(0) {
   memset(regs, 0, sizeof(regs));
   memset(regs_hi, 0, sizeof(regs_hi));
   memset(sregs, 0, sizeof(sregs));
+  memset(dr, 0, sizeof(dr));
   ip = 0;
   flags = 0x0002;  // bit 1 is always 1 on 8088
   eflags_hi = 0;
+  memset(&ldtr_cache, 0, sizeof(ldtr_cache));
+  memset(&tr_cache, 0, sizeof(tr_cache));
+  init_seg_caches();
   setup_parity();
 }
 
@@ -59,16 +65,24 @@ void emu88::reset(void) {
   memset(sregs, 0, sizeof(sregs));
   sregs[seg_CS] = 0xFFFF;  // 8088 starts at FFFF:0000
   ip = 0x0000;
+  insn_ip = 0;
   flags = 0x0002;
   eflags_hi = 0;
   halted = false;
   int_pending = false;
+  in_exception = false;
+  exception_pending = false;
   cycles = 0;
   op_size_32 = false;
   addr_size_32 = false;
   gdtr_base = 0; gdtr_limit = 0;
   idtr_base = 0; idtr_limit = 0x3FF;
-  cr0 = 0;
+  cr0 = 0; cr2 = 0; cr3 = 0; cr4 = 0;
+  memset(dr, 0, sizeof(dr));
+  ldtr = 0; tr = 0; cpl = 0;
+  memset(&ldtr_cache, 0, sizeof(ldtr_cache));
+  memset(&tr_cache, 0, sizeof(tr_cache));
+  init_seg_caches();
 }
 
 //=============================================================================
@@ -99,14 +113,19 @@ emu88_uint16 emu88::port_in16(emu88_uint16 port) {
 //=============================================================================
 
 void emu88::do_interrupt(emu88_uint8 vector) {
+  if (protected_mode()) {
+    do_interrupt_pm(vector, false, 0);
+    return;
+  }
+  // Real mode: IVT-based interrupt dispatch
   push_word(flags);
   push_word(sregs[seg_CS]);
-  push_word(ip);
+  push_word(ip & 0xFFFF);
   clear_flag(FLAG_IF);
   clear_flag(FLAG_TF);
   emu88_uint32 vec_addr = emu88_uint32(vector) * 4;
   ip = mem->fetch_mem16(vec_addr);
-  sregs[seg_CS] = mem->fetch_mem16(vec_addr + 2);
+  load_segment_real(seg_CS, mem->fetch_mem16(vec_addr + 2));
 }
 
 void emu88::request_int(emu88_uint8 vector) {
@@ -163,28 +182,86 @@ emu88_uint16 emu88::default_segment(void) const {
   return sregs[seg_DS];
 }
 
-emu88_uint8 emu88::fetch_byte(emu88_uint16 seg, emu88_uint16 off) {
-  return mem->fetch_mem(effective_address(seg, off));
+bool emu88::check_segment_read(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width) {
+  if (!protected_mode() || v86_mode() || exception_pending) return true;
+  for (int i = 0; i < 6; i++) {
+    if (sregs[i] != seg) continue;
+    if (!seg_cache[i].valid) {
+      raise_exception(i == seg_SS ? 12 : 13, 0);
+      return false;
+    }
+    if (!check_segment_limit(i, off, width)) {
+      raise_exception(i == seg_SS ? 12 : 13, 0);
+      return false;
+    }
+    return true;
+  }
+  return true;
 }
 
-void emu88::store_byte(emu88_uint16 seg, emu88_uint16 off, emu88_uint8 val) {
-  mem->store_mem(effective_address(seg, off), val);
+bool emu88::check_segment_write(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width) {
+  if (!protected_mode() || v86_mode() || exception_pending) return true;
+  for (int i = 0; i < 6; i++) {
+    if (sregs[i] != seg) continue;
+    if (!seg_cache[i].valid) {
+      raise_exception(i == seg_SS ? 12 : 13, 0);
+      return false;
+    }
+    emu88_uint8 type = seg_cache[i].access & 0x0F;
+    // Code segment or read-only data segment → not writable
+    if ((type & 0x08) || !(type & 0x02)) {
+      raise_exception(i == seg_SS ? 12 : 13, 0);
+      return false;
+    }
+    if (!check_segment_limit(i, off, width)) {
+      raise_exception(i == seg_SS ? 12 : 13, 0);
+      return false;
+    }
+    return true;
+  }
+  return true;
 }
 
-emu88_uint16 emu88::fetch_word(emu88_uint16 seg, emu88_uint16 off) {
-  return mem->fetch_mem16(effective_address(seg, off));
+emu88_uint8 emu88::fetch_byte(emu88_uint16 seg, emu88_uint32 off) {
+  if (!check_segment_read(seg, off, 1)) return 0;
+  emu88_uint32 linear = effective_address(seg, off);
+  emu88_uint32 phys = paging_enabled() ? translate_linear(linear, false) : mem->mask_addr(linear);
+  return mem->fetch_mem(phys);
 }
 
-void emu88::store_word(emu88_uint16 seg, emu88_uint16 off, emu88_uint16 val) {
-  mem->store_mem16(effective_address(seg, off), val);
+void emu88::store_byte(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 val) {
+  if (!check_segment_write(seg, off, 1)) return;
+  emu88_uint32 linear = effective_address(seg, off);
+  emu88_uint32 phys = paging_enabled() ? translate_linear(linear, true) : mem->mask_addr(linear);
+  mem->store_mem(phys, val);
 }
 
-emu88_uint32 emu88::fetch_dword(emu88_uint16 seg, emu88_uint16 off) {
-  return mem->fetch_mem32(effective_address(seg, off));
+emu88_uint16 emu88::fetch_word(emu88_uint16 seg, emu88_uint32 off) {
+  if (!check_segment_read(seg, off, 2)) return 0;
+  emu88_uint32 linear = effective_address(seg, off);
+  emu88_uint32 phys = paging_enabled() ? translate_linear(linear, false) : mem->mask_addr(linear);
+  return mem->fetch_mem16(phys);
 }
 
-void emu88::store_dword(emu88_uint16 seg, emu88_uint16 off, emu88_uint32 val) {
-  mem->store_mem32(effective_address(seg, off), val);
+void emu88::store_word(emu88_uint16 seg, emu88_uint32 off, emu88_uint16 val) {
+  if (!check_segment_write(seg, off, 2)) return;
+  emu88_uint32 linear = effective_address(seg, off);
+  emu88_uint32 phys = paging_enabled() ? translate_linear(linear, true) : mem->mask_addr(linear);
+  mem->store_mem16(phys, val);
+}
+
+emu88_uint32 emu88::fetch_dword(emu88_uint16 seg, emu88_uint32 off) {
+  if (!check_segment_read(seg, off, 4)) return 0;
+  emu88_uint32 linear = effective_address(seg, off);
+  emu88_uint32 phys = paging_enabled() ? translate_linear(linear, false) : mem->mask_addr(linear);
+  return mem->fetch_mem32(phys);
+}
+
+void emu88::store_dword(emu88_uint16 seg, emu88_uint32 off, emu88_uint32 val) {
+  if (!check_segment_write(seg, off, 4)) return;
+  emu88_uint32 linear = effective_address(seg, off);
+  emu88_uint32 phys = paging_enabled() ? translate_linear(linear, true) : mem->mask_addr(linear);
+  mem->store_mem32(phys, val);
 }
 
 //=============================================================================
@@ -214,25 +291,58 @@ emu88_uint32 emu88::fetch_ip_dword(void) {
 //=============================================================================
 
 void emu88::push_word(emu88_uint16 val) {
-  regs[reg_SP] -= 2;
-  store_word(sregs[seg_SS], regs[reg_SP], val);
+  if (stack_32()) {
+    emu88_uint32 esp = get_esp() - 2;
+    set_esp(esp);
+    store_word(sregs[seg_SS], esp, val);
+  } else {
+    regs[reg_SP] -= 2;
+    store_word(sregs[seg_SS], regs[reg_SP], val);
+  }
 }
 
 emu88_uint16 emu88::pop_word(void) {
-  emu88_uint16 val = fetch_word(sregs[seg_SS], regs[reg_SP]);
-  regs[reg_SP] += 2;
-  return val;
+  if (stack_32()) {
+    emu88_uint32 esp = get_esp();
+    emu88_uint16 val = fetch_word(sregs[seg_SS], esp);
+    set_esp(esp + 2);
+    return val;
+  } else {
+    emu88_uint16 val = fetch_word(sregs[seg_SS], regs[reg_SP]);
+    regs[reg_SP] += 2;
+    return val;
+  }
 }
 
 void emu88::push_dword(emu88_uint32 val) {
-  regs[reg_SP] -= 4;
-  store_dword(sregs[seg_SS], regs[reg_SP], val);
+  if (stack_32()) {
+    emu88_uint32 esp = get_esp() - 4;
+    set_esp(esp);
+    store_dword(sregs[seg_SS], esp, val);
+  } else {
+    regs[reg_SP] -= 4;
+#ifdef PUSH_DEBUG
+    if (cpl == 3) {
+      emu88_uint32 lin = effective_address(sregs[seg_SS], regs[reg_SP]);
+      fprintf(stderr, "[PUSH32] cpl=%d SS=%04X SP=%04X linear=%08X paging=%d cr0=%08X\n",
+              cpl, sregs[seg_SS], regs[reg_SP], lin, paging_enabled(), cr0);
+    }
+#endif
+    store_dword(sregs[seg_SS], regs[reg_SP], val);
+  }
 }
 
 emu88_uint32 emu88::pop_dword(void) {
-  emu88_uint32 val = fetch_dword(sregs[seg_SS], regs[reg_SP]);
-  regs[reg_SP] += 4;
-  return val;
+  if (stack_32()) {
+    emu88_uint32 esp = get_esp();
+    emu88_uint32 val = fetch_dword(sregs[seg_SS], esp);
+    set_esp(esp + 4);
+    return val;
+  } else {
+    emu88_uint32 val = fetch_dword(sregs[seg_SS], regs[reg_SP]);
+    regs[reg_SP] += 4;
+    return val;
+  }
 }
 
 //=============================================================================
@@ -381,7 +491,7 @@ emu88::modrm_result emu88::decode_modrm_32(emu88_uint8 modrm) {
   }
 
   mr.seg = (seg_override >= 0) ? sregs[seg_override] : base_seg;
-  mr.offset = off & 0xFFFF;  // real mode: wrap to 16-bit
+  mr.offset = protected_mode() ? off : (off & 0xFFFF);
   return mr;
 }
 
@@ -1042,10 +1152,7 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
   case 3: { // CALL m16:16 (far indirect)
     emu88_uint16 off = fetch_word(mr.seg, mr.offset);
     emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 2);
-    push_word(sregs[seg_CS]);
-    push_word(ip);
-    sregs[seg_CS] = seg;
-    ip = off;
+    far_call_or_jmp(seg, off, true);
     break;
   }
   case 4: { // JMP r/m16 (near indirect)
@@ -1055,8 +1162,7 @@ void emu88::execute_grp5_rm16(emu88_uint8 modrm_byte) {
   case 5: { // JMP m16:16 (far indirect)
     emu88_uint16 off = fetch_word(mr.seg, mr.offset);
     emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 2);
-    sregs[seg_CS] = seg;
-    ip = off;
+    far_call_or_jmp(seg, off, false);
     break;
   }
   case 6: { // PUSH r/m16
@@ -1159,14 +1265,27 @@ void emu88::execute_grp5_rm32(emu88_uint8 modrm_byte) {
     set_rm32(mr, alu_dec32(val));
     break;
   }
-  case 2: { // CALL r/m32 (near indirect) — in real mode, only uses low 16 bits
+  case 2: { // CALL r/m32 (near indirect)
     emu88_uint32 target = get_rm32(mr);
-    push_word(ip);
-    ip = target & 0xFFFF;
+    push_dword(ip);
+    ip = protected_mode() ? target : (target & 0xFFFF);
+    break;
+  }
+  case 3: { // CALL m16:32 (far indirect)
+    emu88_uint32 off = fetch_dword(mr.seg, mr.offset);
+    emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 4);
+    far_call_or_jmp(seg, off, true);
     break;
   }
   case 4: { // JMP r/m32 (near indirect)
-    ip = get_rm32(mr) & 0xFFFF;
+    emu88_uint32 target = get_rm32(mr);
+    ip = protected_mode() ? target : (target & 0xFFFF);
+    break;
+  }
+  case 5: { // JMP m16:32 (far indirect)
+    emu88_uint32 off = fetch_dword(mr.seg, mr.offset);
+    emu88_uint16 seg = fetch_word(mr.seg, mr.offset + 4);
+    far_call_or_jmp(seg, off, false);
     break;
   }
   case 6: { // PUSH r/m32
@@ -1190,136 +1309,145 @@ emu88_uint16 emu88::string_src_seg(void) const {
 }
 
 void emu88::execute_string_op(emu88_uint8 opcode) {
-  emu88_int16 dir = get_flag(FLAG_DF) ? -1 : 1;
+  emu88_int32 dir = get_flag(FLAG_DF) ? -1 : 1;
+  bool a32 = addr_size_32;
+
+  // Helpers for SI/DI/CX access respecting address size
+  auto get_si = [&]() -> emu88_uint32 { return a32 ? get_reg32(reg_SI) : regs[reg_SI]; };
+  auto get_di = [&]() -> emu88_uint32 { return a32 ? get_reg32(reg_DI) : regs[reg_DI]; };
+  auto add_si = [&](emu88_int32 n) { if (a32) set_reg32(reg_SI, get_reg32(reg_SI) + n); else regs[reg_SI] += n; };
+  auto add_di = [&](emu88_int32 n) { if (a32) set_reg32(reg_DI, get_reg32(reg_DI) + n); else regs[reg_DI] += n; };
+  auto get_cx = [&]() -> emu88_uint32 { return a32 ? get_reg32(reg_CX) : regs[reg_CX]; };
+  auto dec_cx = [&]() { if (a32) set_reg32(reg_CX, get_reg32(reg_CX) - 1); else regs[reg_CX]--; };
 
   auto do_one = [&]() {
     switch (opcode) {
     case 0x6C: { // INSB (80186+)
-      store_byte(sregs[seg_ES], regs[reg_DI], port_in(regs[reg_DX]));
-      regs[reg_DI] += dir;
+      store_byte(sregs[seg_ES], get_di(), port_in(regs[reg_DX]));
+      add_di(dir);
       break;
     }
     case 0x6D: { // INSW / INSD (80186+)
       if (op_size_32) {
         emu88_uint32 val = port_in16(regs[reg_DX]) | (emu88_uint32(port_in16(regs[reg_DX])) << 16);
-        store_dword(sregs[seg_ES], regs[reg_DI], val);
-        regs[reg_DI] += dir * 4;
+        store_dword(sregs[seg_ES], get_di(), val);
+        add_di(dir * 4);
       } else {
         emu88_uint16 val = port_in(regs[reg_DX]) | ((emu88_uint16)port_in(regs[reg_DX]) << 8);
-        store_word(sregs[seg_ES], regs[reg_DI], val);
-        regs[reg_DI] += dir * 2;
+        store_word(sregs[seg_ES], get_di(), val);
+        add_di(dir * 2);
       }
       break;
     }
     case 0x6E: { // OUTSB (80186+)
-      port_out(regs[reg_DX], fetch_byte(string_src_seg(), regs[reg_SI]));
-      regs[reg_SI] += dir;
+      port_out(regs[reg_DX], fetch_byte(string_src_seg(), get_si()));
+      add_si(dir);
       break;
     }
     case 0x6F: { // OUTSW / OUTSD (80186+)
       if (op_size_32) {
-        emu88_uint32 val = fetch_dword(string_src_seg(), regs[reg_SI]);
+        emu88_uint32 val = fetch_dword(string_src_seg(), get_si());
         port_out16(regs[reg_DX], val & 0xFFFF);
         port_out16(regs[reg_DX], (val >> 16) & 0xFFFF);
-        regs[reg_SI] += dir * 4;
+        add_si(dir * 4);
       } else {
-        emu88_uint16 val = fetch_word(string_src_seg(), regs[reg_SI]);
+        emu88_uint16 val = fetch_word(string_src_seg(), get_si());
         port_out(regs[reg_DX], val & 0xFF);
         port_out(regs[reg_DX], (val >> 8) & 0xFF);
-        regs[reg_SI] += dir * 2;
+        add_si(dir * 2);
       }
       break;
     }
     case 0xA4: { // MOVSB
-      emu88_uint8 val = fetch_byte(string_src_seg(), regs[reg_SI]);
-      store_byte(sregs[seg_ES], regs[reg_DI], val);
-      regs[reg_SI] += dir;
-      regs[reg_DI] += dir;
+      emu88_uint8 val = fetch_byte(string_src_seg(), get_si());
+      store_byte(sregs[seg_ES], get_di(), val);
+      add_si(dir);
+      add_di(dir);
       break;
     }
     case 0xA5: { // MOVSW / MOVSD
       if (op_size_32) {
-        emu88_uint32 val = fetch_dword(string_src_seg(), regs[reg_SI]);
-        store_dword(sregs[seg_ES], regs[reg_DI], val);
-        regs[reg_SI] += dir * 4;
-        regs[reg_DI] += dir * 4;
+        emu88_uint32 val = fetch_dword(string_src_seg(), get_si());
+        store_dword(sregs[seg_ES], get_di(), val);
+        add_si(dir * 4);
+        add_di(dir * 4);
       } else {
-        emu88_uint16 val = fetch_word(string_src_seg(), regs[reg_SI]);
-        store_word(sregs[seg_ES], regs[reg_DI], val);
-        regs[reg_SI] += dir * 2;
-        regs[reg_DI] += dir * 2;
+        emu88_uint16 val = fetch_word(string_src_seg(), get_si());
+        store_word(sregs[seg_ES], get_di(), val);
+        add_si(dir * 2);
+        add_di(dir * 2);
       }
       break;
     }
     case 0xA6: { // CMPSB
-      emu88_uint8 src = fetch_byte(string_src_seg(), regs[reg_SI]);
-      emu88_uint8 dst = fetch_byte(sregs[seg_ES], regs[reg_DI]);
+      emu88_uint8 src = fetch_byte(string_src_seg(), get_si());
+      emu88_uint8 dst = fetch_byte(sregs[seg_ES], get_di());
       alu_sub8(src, dst, 0);
-      regs[reg_SI] += dir;
-      regs[reg_DI] += dir;
+      add_si(dir);
+      add_di(dir);
       break;
     }
     case 0xA7: { // CMPSW / CMPSD
       if (op_size_32) {
-        emu88_uint32 src = fetch_dword(string_src_seg(), regs[reg_SI]);
-        emu88_uint32 dst = fetch_dword(sregs[seg_ES], regs[reg_DI]);
+        emu88_uint32 src = fetch_dword(string_src_seg(), get_si());
+        emu88_uint32 dst = fetch_dword(sregs[seg_ES], get_di());
         alu_sub32(src, dst, 0);
-        regs[reg_SI] += dir * 4;
-        regs[reg_DI] += dir * 4;
+        add_si(dir * 4);
+        add_di(dir * 4);
       } else {
-        emu88_uint16 src = fetch_word(string_src_seg(), regs[reg_SI]);
-        emu88_uint16 dst = fetch_word(sregs[seg_ES], regs[reg_DI]);
+        emu88_uint16 src = fetch_word(string_src_seg(), get_si());
+        emu88_uint16 dst = fetch_word(sregs[seg_ES], get_di());
         alu_sub16(src, dst, 0);
-        regs[reg_SI] += dir * 2;
-        regs[reg_DI] += dir * 2;
+        add_si(dir * 2);
+        add_di(dir * 2);
       }
       break;
     }
     case 0xAA: { // STOSB
-      store_byte(sregs[seg_ES], regs[reg_DI], regs[reg_AX] & 0xFF);
-      regs[reg_DI] += dir;
+      store_byte(sregs[seg_ES], get_di(), regs[reg_AX] & 0xFF);
+      add_di(dir);
       break;
     }
     case 0xAB: { // STOSW / STOSD
       if (op_size_32) {
-        store_dword(sregs[seg_ES], regs[reg_DI], get_reg32(reg_AX));
-        regs[reg_DI] += dir * 4;
+        store_dword(sregs[seg_ES], get_di(), get_reg32(reg_AX));
+        add_di(dir * 4);
       } else {
-        store_word(sregs[seg_ES], regs[reg_DI], regs[reg_AX]);
-        regs[reg_DI] += dir * 2;
+        store_word(sregs[seg_ES], get_di(), regs[reg_AX]);
+        add_di(dir * 2);
       }
       break;
     }
     case 0xAC: { // LODSB
-      set_reg8(reg_AL, fetch_byte(string_src_seg(), regs[reg_SI]));
-      regs[reg_SI] += dir;
+      set_reg8(reg_AL, fetch_byte(string_src_seg(), get_si()));
+      add_si(dir);
       break;
     }
     case 0xAD: { // LODSW / LODSD
       if (op_size_32) {
-        set_reg32(reg_AX, fetch_dword(string_src_seg(), regs[reg_SI]));
-        regs[reg_SI] += dir * 4;
+        set_reg32(reg_AX, fetch_dword(string_src_seg(), get_si()));
+        add_si(dir * 4);
       } else {
-        regs[reg_AX] = fetch_word(string_src_seg(), regs[reg_SI]);
-        regs[reg_SI] += dir * 2;
+        regs[reg_AX] = fetch_word(string_src_seg(), get_si());
+        add_si(dir * 2);
       }
       break;
     }
     case 0xAE: { // SCASB
-      emu88_uint8 val = fetch_byte(sregs[seg_ES], regs[reg_DI]);
+      emu88_uint8 val = fetch_byte(sregs[seg_ES], get_di());
       alu_sub8(regs[reg_AX] & 0xFF, val, 0);
-      regs[reg_DI] += dir;
+      add_di(dir);
       break;
     }
     case 0xAF: { // SCASW / SCASD
       if (op_size_32) {
-        emu88_uint32 val = fetch_dword(sregs[seg_ES], regs[reg_DI]);
+        emu88_uint32 val = fetch_dword(sregs[seg_ES], get_di());
         alu_sub32(get_reg32(reg_AX), val, 0);
-        regs[reg_DI] += dir * 4;
+        add_di(dir * 4);
       } else {
-        emu88_uint16 val = fetch_word(sregs[seg_ES], regs[reg_DI]);
+        emu88_uint16 val = fetch_word(sregs[seg_ES], get_di());
         alu_sub16(regs[reg_AX], val, 0);
-        regs[reg_DI] += dir * 2;
+        add_di(dir * 2);
       }
       break;
     }
@@ -1329,12 +1457,10 @@ void emu88::execute_string_op(emu88_uint8 opcode) {
   if (rep_prefix == REP_NONE) {
     do_one();
   } else {
-    // REP string ops: ~17 cycles per iteration on 8088
-    while (regs[reg_CX] != 0) {
+    while (get_cx() != 0) {
       do_one();
-      regs[reg_CX]--;
+      dec_cx();
       cycles += 17;
-      // For CMPS/SCAS, check termination condition
       if (opcode == 0xA6 || opcode == 0xA7 || opcode == 0xAE || opcode == 0xAF) {
         if (rep_prefix == REP_REPZ && !get_flag(FLAG_ZF))
           break;
@@ -1447,10 +1573,19 @@ static const uint8_t base_cycles[256] = {
 void emu88::execute(void) {
   seg_override = -1;
   rep_prefix = REP_NONE;
-  op_size_32 = false;
-  addr_size_32 = false;
+
+  // Default operand/address size depends on code segment D/B bit
+  // In V86 mode, always default to 16-bit (like real mode)
+  bool default_32 = v86_mode() ? false : code_32();
+  op_size_32 = default_32;
+  addr_size_32 = default_32;
+
+  // Save instruction start IP for fault-type exceptions (before prefixes)
+  insn_ip = ip;
+  exception_pending = false;
 
   // Handle prefix bytes
+  bool lock_prefix = false;
   bool prefix_done = false;
   while (!prefix_done) {
     emu88_uint8 prefix = fetch_byte(sregs[seg_CS], ip);
@@ -1461,9 +1596,9 @@ void emu88::execute(void) {
     case 0x3E: seg_override = seg_DS; ip++; break;
     case 0x64: seg_override = seg_FS; ip++; break;
     case 0x65: seg_override = seg_GS; ip++; break;
-    case 0x66: op_size_32 = true; ip++; break;
-    case 0x67: addr_size_32 = true; ip++; break;
-    case 0xF0: ip++; break;  // LOCK prefix (ignored for emulation)
+    case 0x66: op_size_32 = !op_size_32; ip++; break;   // toggle operand size
+    case 0x67: addr_size_32 = !addr_size_32; ip++; break; // toggle address size
+    case 0xF0: lock_prefix = true; ip++; break;  // LOCK prefix
     case 0xF2: rep_prefix = REP_REPNZ; ip++; break;
     case 0xF3: rep_prefix = REP_REPZ; ip++; break;
     default: prefix_done = true; break;
@@ -1472,6 +1607,35 @@ void emu88::execute(void) {
 
   emu88_uint8 opcode = fetch_ip_byte();
   cycles += base_cycles[opcode];
+
+  // Validate LOCK prefix: only valid with specific memory-destination opcodes
+  if (lock_prefix) {
+    bool lock_valid = false;
+    switch (opcode) {
+    // ALU r/m, reg (ADD/OR/ADC/SBB/AND/SUB/XOR only, not CMP)
+    case 0x00: case 0x01: case 0x08: case 0x09:
+    case 0x10: case 0x11: case 0x18: case 0x19:
+    case 0x20: case 0x21: case 0x28: case 0x29:
+    case 0x30: case 0x31:
+    // GRP1 r/m, imm (ADD/OR/ADC/SBB/AND/SUB/XOR)
+    case 0x80: case 0x81: case 0x82: case 0x83:
+    // XCHG r/m, reg
+    case 0x86: case 0x87:
+    // GRP3 (NOT, NEG)
+    case 0xF6: case 0xF7:
+    // GRP4/5 (INC, DEC)
+    case 0xFE: case 0xFF:
+      lock_valid = true;
+      break;
+    case 0x0F: // 2-byte opcodes handled separately
+      lock_valid = true; // Will validate on actual 0F opcode if needed
+      break;
+    }
+    if (!lock_valid) {
+      raise_exception_no_error(6);  // #UD
+      return;
+    }
+  }
 
   switch (opcode) {
   //--- ALU: op r/m8, r8 ---
@@ -1568,15 +1732,15 @@ void emu88::execute(void) {
   }
 
   //--- PUSH segment ---
-  case 0x06: push_word(sregs[seg_ES]); break;
-  case 0x0E: push_word(sregs[seg_CS]); break;
-  case 0x16: push_word(sregs[seg_SS]); break;
-  case 0x1E: push_word(sregs[seg_DS]); break;
+  case 0x06: if (op_size_32) push_dword((emu88_uint32)sregs[seg_ES]); else push_word(sregs[seg_ES]); break;
+  case 0x0E: if (op_size_32) push_dword((emu88_uint32)sregs[seg_CS]); else push_word(sregs[seg_CS]); break;
+  case 0x16: if (op_size_32) push_dword((emu88_uint32)sregs[seg_SS]); else push_word(sregs[seg_SS]); break;
+  case 0x1E: if (op_size_32) push_dword((emu88_uint32)sregs[seg_DS]); else push_word(sregs[seg_DS]); break;
 
   //--- POP segment ---
-  case 0x07: sregs[seg_ES] = pop_word(); break;
-  case 0x17: sregs[seg_SS] = pop_word(); break;
-  case 0x1F: sregs[seg_DS] = pop_word(); break;
+  case 0x07: load_segment(seg_ES, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
+  case 0x17: load_segment(seg_SS, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
+  case 0x1F: load_segment(seg_DS, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
   // 0x0F: POP CS is not valid on 8088 (undefined behavior)
 
   //--- DAA ---
@@ -1904,13 +2068,17 @@ void emu88::execute(void) {
     break;
   }
 
-  //--- MOV r/m16, sreg ---
+  //--- MOV r/m16, sreg (with 66h prefix: zero-extends to 32-bit) ---
   case 0x8C: {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     int sreg_idx = mr.reg_field & 7;
     if (sreg_idx >= 6) sreg_idx = 0;
-    set_rm16(mr, sregs[sreg_idx]);
+    if (op_size_32 && mr.is_register) {
+      set_reg32(mr.rm_field, (emu88_uint32)sregs[sreg_idx]);
+    } else {
+      set_rm16(mr, sregs[sreg_idx]);
+    }
     break;
   }
 
@@ -1928,8 +2096,13 @@ void emu88::execute(void) {
     emu88_uint8 modrm = fetch_ip_byte();
     modrm_result mr = decode_modrm(modrm);
     int sreg_idx = mr.reg_field & 7;
+    if (sreg_idx == seg_CS) {
+      // MOV CS is invalid on 286+; raise #UD
+      raise_exception_no_error(6);
+      break;
+    }
     if (sreg_idx >= 6) sreg_idx = 0;
-    sregs[sreg_idx] = get_rm16(mr);
+    load_segment(sreg_idx, get_rm16(mr));
     break;
   }
 
@@ -1978,31 +2151,70 @@ void emu88::execute(void) {
       regs[reg_DX] = (regs[reg_AX] & 0x8000) ? 0xFFFF : 0x0000;
     break;
 
-  //--- CALL far ptr16:16 ---
+  //--- CALL far ptr16:16 / ptr16:32 ---
   case 0x9A: {
-    emu88_uint16 off = fetch_ip_word();
-    emu88_uint16 seg = fetch_ip_word();
-    push_word(sregs[seg_CS]);
-    push_word(ip);
-    sregs[seg_CS] = seg;
-    ip = off;
+    if (op_size_32) {
+      emu88_uint32 off = fetch_ip_dword();
+      emu88_uint16 seg = fetch_ip_word();
+      far_call_or_jmp(seg, off, true);
+    } else {
+      emu88_uint16 off = fetch_ip_word();
+      emu88_uint16 seg = fetch_ip_word();
+      far_call_or_jmp(seg, off, true);
+    }
     break;
   }
 
   //--- WAIT ---
   case 0x9B:
+    // If CR0.TS and CR0.MP are both set, raise #NM
+    if ((cr0 & CR0_TS) && (cr0 & CR0_MP)) {
+      raise_exception_no_error(7);
+      break;
+    }
     break;  // no FPU, just continue
 
   //--- PUSHF / PUSHFD ---
   case 0x9C:
-    if (op_size_32) push_dword(get_eflags() | 0x0002);
-    else push_word((flags & 0x7FFF) | 0x0002);  // 386: bit 15=0, bit 1=1, preserve IOPL/NT
+    // In V86 mode, IOPL must be 3 or #GP(0)
+    if (v86_mode() && get_iopl() < 3) {
+      raise_exception(13, 0);
+      break;
+    }
+    if (op_size_32) push_dword((get_eflags() & ~(emu88_uint32)EFLAG_VM) | 0x0002);
+    else push_word((flags & 0x7FFF) | 0x0002);
     break;
 
   //--- POPF / POPFD ---
   case 0x9D:
-    if (op_size_32) set_eflags((pop_dword() & 0x003FFFFF) | 0x0002);  // mask reserved bits
-    else flags = (pop_word() & 0x7FD7) | 0x0002;  // 386: allow IOPL/NT, clear bits 15/5/3
+    // In V86 mode, IOPL must be 3 or #GP(0)
+    if (v86_mode() && get_iopl() < 3) {
+      raise_exception(13, 0);
+      break;
+    }
+    if (op_size_32) {
+      emu88_uint32 new_eflags = pop_dword();
+      if (cpl > 0) {
+        // CPL > 0: cannot change IOPL; CPL > IOPL: cannot change IF
+        emu88_uint32 mask = 0x003FFFFF & ~(emu88_uint32)EFLAG_VM;
+        if (cpl > 0) mask &= ~(emu88_uint32)EFLAG_IOPL_MASK;
+        if (cpl > get_iopl()) mask &= ~(emu88_uint32)FLAG_IF;
+        emu88_uint32 preserved = get_eflags() & ~mask;
+        set_eflags((preserved | (new_eflags & mask)) | 0x0002);
+      } else {
+        set_eflags((new_eflags & (0x003FFFFF & ~(emu88_uint32)EFLAG_VM)) | 0x0002);
+      }
+    } else {
+      emu88_uint16 new_flags = pop_word();
+      if (cpl > 0) {
+        emu88_uint16 mask = 0x7FD7;
+        if (cpl > 0) mask &= ~(emu88_uint16)EFLAG_IOPL_MASK;
+        if (cpl > get_iopl()) mask &= ~(emu88_uint16)FLAG_IF;
+        flags = ((flags & ~mask) | (new_flags & mask)) | 0x0002;
+      } else {
+        flags = (new_flags & 0x7FD7) | 0x0002;
+      }
+    }
     break;
 
   //--- SAHF ---
@@ -2015,31 +2227,31 @@ void emu88::execute(void) {
     set_reg8(reg_AH, flags & 0xFF);
     break;
 
-  //--- MOV AL, [addr16] ---
+  //--- MOV AL, [moffs] ---
   case 0xA0: {
-    emu88_uint16 addr = fetch_ip_word();
+    emu88_uint32 addr = addr_size_32 ? fetch_ip_dword() : fetch_ip_word();
     set_reg8(reg_AL, fetch_byte(default_segment(), addr));
     break;
   }
 
-  //--- MOV AX, [addr16] ---
+  //--- MOV AX/EAX, [moffs] ---
   case 0xA1: {
-    emu88_uint16 addr = fetch_ip_word();
+    emu88_uint32 addr = addr_size_32 ? fetch_ip_dword() : fetch_ip_word();
     if (op_size_32) set_reg32(reg_AX, fetch_dword(default_segment(), addr));
     else regs[reg_AX] = fetch_word(default_segment(), addr);
     break;
   }
 
-  //--- MOV [addr16], AL ---
+  //--- MOV [moffs], AL ---
   case 0xA2: {
-    emu88_uint16 addr = fetch_ip_word();
+    emu88_uint32 addr = addr_size_32 ? fetch_ip_dword() : fetch_ip_word();
     store_byte(default_segment(), addr, get_reg8(reg_AL));
     break;
   }
 
-  //--- MOV [addr16], AX ---
+  //--- MOV [moffs], AX/EAX ---
   case 0xA3: {
-    emu88_uint16 addr = fetch_ip_word();
+    emu88_uint32 addr = addr_size_32 ? fetch_ip_dword() : fetch_ip_word();
     if (op_size_32) store_dword(default_segment(), addr, get_reg32(reg_AX));
     else store_word(default_segment(), addr, regs[reg_AX]);
     break;
@@ -2107,14 +2319,23 @@ void emu88::execute(void) {
   //--- RET near imm16 ---
   case 0xC2: {
     emu88_uint16 pop_count = fetch_ip_word();
-    ip = pop_word();
-    regs[reg_SP] += pop_count;
+    if (op_size_32) {
+      ip = pop_dword();
+    } else {
+      ip = pop_word();
+    }
+    if (stack_32()) set_esp(get_esp() + pop_count);
+    else regs[reg_SP] += pop_count;
     break;
   }
 
   //--- RET near ---
   case 0xC3:
-    ip = pop_word();
+    if (op_size_32) {
+      ip = pop_dword();
+    } else {
+      ip = pop_word();
+    }
     break;
 
   //--- LES r16, m16:16 / LES r32, m16:32 ---
@@ -2123,10 +2344,10 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     if (op_size_32) {
       set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-      sregs[seg_ES] = fetch_word(mr.seg, mr.offset + 4);
+      load_segment(seg_ES, fetch_word(mr.seg, mr.offset + 4));
     } else {
       regs[mr.reg_field] = fetch_word(mr.seg, mr.offset);
-      sregs[seg_ES] = fetch_word(mr.seg, mr.offset + 2);
+      load_segment(seg_ES, fetch_word(mr.seg, mr.offset + 2));
     }
     break;
   }
@@ -2137,10 +2358,10 @@ void emu88::execute(void) {
     modrm_result mr = decode_modrm(modrm);
     if (op_size_32) {
       set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-      sregs[seg_DS] = fetch_word(mr.seg, mr.offset + 4);
+      load_segment(seg_DS, fetch_word(mr.seg, mr.offset + 4));
     } else {
       regs[mr.reg_field] = fetch_word(mr.seg, mr.offset);
-      sregs[seg_DS] = fetch_word(mr.seg, mr.offset + 2);
+      load_segment(seg_DS, fetch_word(mr.seg, mr.offset + 2));
     }
     break;
   }
@@ -2165,44 +2386,247 @@ void emu88::execute(void) {
   //--- RETF imm16 ---
   case 0xCA: {
     emu88_uint16 pop_count = fetch_ip_word();
-    ip = pop_word();
-    sregs[seg_CS] = pop_word();
-    regs[reg_SP] += pop_count;
+    if (op_size_32) {
+      emu88_uint32 new_eip = pop_dword();
+      emu88_uint16 new_cs = pop_dword() & 0xFFFF;
+      emu88_uint8 ret_cpl = new_cs & 3;
+      if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
+        // Inter-privilege return: pop ESP and SS
+        if (stack_32()) set_esp(get_esp() + pop_count);
+        else regs[reg_SP] += pop_count;
+        emu88_uint32 new_esp = pop_dword();
+        emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+        cpl = ret_cpl;
+        load_segment(seg_CS, new_cs);
+        ip = new_eip;
+        load_segment(seg_SS, new_ss);
+        set_esp(new_esp + pop_count);
+        invalidate_segments_for_cpl();
+      } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        raise_exception(13, new_cs & 0xFFFC);
+      } else {
+        load_segment(seg_CS, new_cs);
+        ip = new_eip;
+        if (stack_32()) set_esp(get_esp() + pop_count);
+        else regs[reg_SP] += pop_count;
+      }
+    } else {
+      emu88_uint16 new_ip = pop_word();
+      emu88_uint16 new_cs = pop_word();
+      emu88_uint8 ret_cpl = new_cs & 3;
+      if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
+        if (stack_32()) set_esp(get_esp() + pop_count);
+        else regs[reg_SP] += pop_count;
+        emu88_uint16 new_sp = pop_word();
+        emu88_uint16 new_ss = pop_word();
+        cpl = ret_cpl;
+        load_segment(seg_CS, new_cs);
+        ip = new_ip;
+        load_segment(seg_SS, new_ss);
+        regs[reg_SP] = new_sp + pop_count;
+        invalidate_segments_for_cpl();
+      } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        raise_exception(13, new_cs & 0xFFFC);
+      } else {
+        load_segment(seg_CS, new_cs);
+        ip = new_ip;
+        if (stack_32()) set_esp(get_esp() + pop_count);
+        else regs[reg_SP] += pop_count;
+      }
+    }
     break;
   }
 
   //--- RETF ---
   case 0xCB:
-    ip = pop_word();
-    sregs[seg_CS] = pop_word();
+    if (op_size_32) {
+      emu88_uint32 new_eip = pop_dword();
+      emu88_uint16 new_cs = pop_dword() & 0xFFFF;
+      emu88_uint8 ret_cpl = new_cs & 3;
+      if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
+        emu88_uint32 new_esp = pop_dword();
+        emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+        cpl = ret_cpl;
+        load_segment(seg_CS, new_cs);
+        ip = new_eip;
+        load_segment(seg_SS, new_ss);
+        set_esp(new_esp);
+        invalidate_segments_for_cpl();
+      } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        raise_exception(13, new_cs & 0xFFFC);
+      } else {
+        load_segment(seg_CS, new_cs);
+        ip = new_eip;
+      }
+    } else {
+      emu88_uint16 new_ip = pop_word();
+      emu88_uint16 new_cs = pop_word();
+      emu88_uint8 ret_cpl = new_cs & 3;
+      if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
+        emu88_uint16 new_sp = pop_word();
+        emu88_uint16 new_ss = pop_word();
+        cpl = ret_cpl;
+        load_segment(seg_CS, new_cs);
+        ip = new_ip;
+        load_segment(seg_SS, new_ss);
+        regs[reg_SP] = new_sp;
+        invalidate_segments_for_cpl();
+      } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        raise_exception(13, new_cs & 0xFFFC);
+      } else {
+        load_segment(seg_CS, new_cs);
+        ip = new_ip;
+      }
+    }
     break;
 
   //--- INT 3 ---
   case 0xCC:
-    do_interrupt(3);
+    // In V86 mode with IOPL < 3, #GP(0) for monitor to handle
+    if (v86_mode() && get_iopl() < 3) {
+      raise_exception(13, 0);
+      break;
+    }
+    if (protected_mode()) do_interrupt_pm(3, false, 0, true);
+    else do_interrupt(3);
     break;
 
   //--- INT imm8 ---
-  case 0xCD:
-    do_interrupt(fetch_ip_byte());
+  case 0xCD: {
+    emu88_uint8 vec = fetch_ip_byte();
+    // In V86 mode with IOPL < 3, #GP(0) for monitor to handle
+    if (v86_mode() && get_iopl() < 3) {
+      raise_exception(13, 0);
+      break;
+    }
+    if (protected_mode()) do_interrupt_pm(vec, false, 0, true);
+    else do_interrupt(vec);
     break;
+  }
 
   //--- INTO ---
   case 0xCE:
-    if (get_flag(FLAG_OF))
-      do_interrupt(4);
+    if (get_flag(FLAG_OF)) {
+      if (v86_mode() && get_iopl() < 3) {
+        raise_exception(13, 0);
+        break;
+      }
+      if (protected_mode()) do_interrupt_pm(4, false, 0, true);
+      else do_interrupt(4);
+    }
     break;
 
   //--- IRET / IRETD ---
   case 0xCF:
-    if (op_size_32) {
-      ip = pop_dword() & 0xFFFF;  // in real mode, IP is still 16-bit
-      sregs[seg_CS] = pop_dword() & 0xFFFF;
-      set_eflags((pop_dword() & 0x003FFFFF) | 0x0002);
+    if (v86_mode()) {
+      // V86 mode IRET: IOPL must be 3 or #GP(0)
+      if (get_iopl() < 3) {
+        raise_exception(13, 0);
+        break;
+      }
+      // V86 IRET acts like real mode
+      if (op_size_32) {
+        ip = pop_dword();
+        load_segment_real(seg_CS, pop_dword() & 0xFFFF);
+        // Don't change IOPL or VM in V86 mode
+        emu88_uint32 new_eflags = pop_dword();
+        emu88_uint32 preserved = get_eflags() & (EFLAG_IOPL_MASK | EFLAG_VM);
+        set_eflags(((new_eflags & ~(EFLAG_IOPL_MASK | EFLAG_VM)) | preserved) | 0x0002);
+      } else {
+        ip = pop_word();
+        load_segment_real(seg_CS, pop_word());
+        emu88_uint16 new_flags = pop_word();
+        emu88_uint16 preserved = flags & (emu88_uint16)EFLAG_IOPL_MASK;
+        flags = ((new_flags & ~(emu88_uint16)EFLAG_IOPL_MASK) | preserved) | 0x0002;
+      }
+    } else if (protected_mode()) {
+      if (op_size_32) {
+        emu88_uint32 new_eip = pop_dword();
+        emu88_uint32 new_cs = pop_dword() & 0xFFFF;
+        emu88_uint32 new_eflags = pop_dword();
+
+        // Check for return to V86 mode (VM bit set and we're in ring 0)
+        if ((new_eflags & EFLAG_VM) && cpl == 0) {
+          // Return to V86 mode: pop ESP, SS, ES, DS, FS, GS
+          emu88_uint32 new_esp = pop_dword();
+          emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+          emu88_uint16 new_es = pop_dword() & 0xFFFF;
+          emu88_uint16 new_ds = pop_dword() & 0xFFFF;
+          emu88_uint16 new_fs = pop_dword() & 0xFFFF;
+          emu88_uint16 new_gs = pop_dword() & 0xFFFF;
+
+          // Set EFLAGS with VM bit
+          set_eflags((new_eflags & 0x003FFFFF) | 0x0002);
+
+          // Load segment registers as real mode values
+          sregs[seg_CS] = new_cs;
+          seg_cache[seg_CS].base = (emu88_uint32)new_cs << 4;
+          seg_cache[seg_CS].limit = 0xFFFF;
+          seg_cache[seg_CS].access = 0x9B;
+          seg_cache[seg_CS].flags = 0;
+          seg_cache[seg_CS].valid = true;
+
+          ip = new_eip;
+
+          load_segment_real(seg_SS, new_ss);
+          set_esp(new_esp);
+          load_segment_real(seg_ES, new_es);
+          load_segment_real(seg_DS, new_ds);
+          load_segment_real(seg_FS, new_fs);
+          load_segment_real(seg_GS, new_gs);
+          cpl = 3;  // V86 mode is always ring 3
+        } else {
+          // Normal protected mode IRET
+          emu88_uint8 ret_cpl = new_cs & 3;
+          if (ret_cpl > cpl) {
+            // Outer privilege: pop ESP and SS
+            emu88_uint32 new_esp = pop_dword();
+            emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+            set_eflags((new_eflags & 0x003FFFFF) | 0x0002);
+            cpl = ret_cpl;  // Update CPL before loading segments
+            load_segment(seg_CS, new_cs);
+            ip = new_eip;
+            load_segment(seg_SS, new_ss);
+            set_esp(new_esp);
+            invalidate_segments_for_cpl();
+          } else {
+            set_eflags((new_eflags & 0x003FFFFF) | 0x0002);
+            load_segment(seg_CS, new_cs);
+            ip = new_eip;
+          }
+        }
+      } else {
+        emu88_uint16 new_ip = pop_word();
+        emu88_uint16 new_cs = pop_word();
+        emu88_uint16 new_flags = pop_word();
+        emu88_uint8 ret_cpl = new_cs & 3;
+        if (ret_cpl > cpl) {
+          emu88_uint16 new_sp = pop_word();
+          emu88_uint16 new_ss = pop_word();
+          flags = (new_flags & 0x7FD7) | 0x0002;
+          cpl = ret_cpl;  // Update CPL before loading segments
+          load_segment(seg_CS, new_cs);
+          ip = new_ip;
+          load_segment(seg_SS, new_ss);
+          regs[reg_SP] = new_sp;
+          invalidate_segments_for_cpl();
+        } else {
+          flags = (new_flags & 0x7FD7) | 0x0002;
+          load_segment(seg_CS, new_cs);
+          ip = new_ip;
+        }
+      }
     } else {
-      ip = pop_word();
-      sregs[seg_CS] = pop_word();
-      flags = (pop_word() & 0x7FD7) | 0x0002;  // 386: allow IOPL/NT
+      // Real mode IRET
+      if (op_size_32) {
+        ip = pop_dword();
+        load_segment_real(seg_CS, pop_dword() & 0xFFFF);
+        set_eflags((pop_dword() & 0x003FFFFF) | 0x0002);
+      } else {
+        ip = pop_word();
+        load_segment_real(seg_CS, pop_word());
+        flags = (pop_word() & 0x7FD7) | 0x0002;
+      }
     }
     break;
 
@@ -2275,6 +2699,11 @@ void emu88::execute(void) {
   //--- ESC (FPU escape, 0xD8-0xDF) ---
   case 0xD8: case 0xD9: case 0xDA: case 0xDB:
   case 0xDC: case 0xDD: case 0xDE: case 0xDF: {
+    // If CR0.EM is set, raise #NM (device not available)
+    if (cr0 & CR0_EM) {
+      raise_exception_no_error(7);
+      break;
+    }
     // No FPU - just consume the modrm byte and any displacement
     emu88_uint8 modrm = fetch_ip_byte();
     decode_modrm(modrm);  // consume displacement bytes
@@ -2284,59 +2713,96 @@ void emu88::execute(void) {
   //--- LOOPNZ/LOOPNE ---
   case 0xE0: {
     emu88_int8 disp = (emu88_int8)fetch_ip_byte();
-    regs[reg_CX]--;
-    if (regs[reg_CX] != 0 && !get_flag(FLAG_ZF))
-      ip += disp;
+    if (addr_size_32) {
+      set_reg32(reg_CX, get_reg32(reg_CX) - 1);
+      if (get_reg32(reg_CX) != 0 && !get_flag(FLAG_ZF)) ip += disp;
+    } else {
+      regs[reg_CX]--;
+      if (regs[reg_CX] != 0 && !get_flag(FLAG_ZF)) ip += disp;
+    }
     break;
   }
 
   //--- LOOPZ/LOOPE ---
   case 0xE1: {
     emu88_int8 disp = (emu88_int8)fetch_ip_byte();
-    regs[reg_CX]--;
-    if (regs[reg_CX] != 0 && get_flag(FLAG_ZF))
-      ip += disp;
+    if (addr_size_32) {
+      set_reg32(reg_CX, get_reg32(reg_CX) - 1);
+      if (get_reg32(reg_CX) != 0 && get_flag(FLAG_ZF)) ip += disp;
+    } else {
+      regs[reg_CX]--;
+      if (regs[reg_CX] != 0 && get_flag(FLAG_ZF)) ip += disp;
+    }
     break;
   }
 
   //--- LOOP ---
   case 0xE2: {
     emu88_int8 disp = (emu88_int8)fetch_ip_byte();
-    regs[reg_CX]--;
-    if (regs[reg_CX] != 0)
-      ip += disp;
+    if (addr_size_32) {
+      set_reg32(reg_CX, get_reg32(reg_CX) - 1);
+      if (get_reg32(reg_CX) != 0) ip += disp;
+    } else {
+      regs[reg_CX]--;
+      if (regs[reg_CX] != 0) ip += disp;
+    }
     break;
   }
 
-  //--- JCXZ ---
+  //--- JCXZ / JECXZ ---
   case 0xE3: {
     emu88_int8 disp = (emu88_int8)fetch_ip_byte();
-    if (regs[reg_CX] == 0)
-      ip += disp;
+    if (addr_size_32) {
+      if (get_reg32(reg_CX) == 0) ip += disp;
+    } else {
+      if (regs[reg_CX] == 0) ip += disp;
+    }
     break;
   }
 
   //--- IN AL, imm8 ---
-  case 0xE4:
-    set_reg8(reg_AL, port_in(fetch_ip_byte()));
+  case 0xE4: {
+    emu88_uint8 port = fetch_ip_byte();
+    if (protected_mode() && !check_io_permission(port, 1)) {
+      raise_exception(13, 0);
+      break;
+    }
+    set_reg8(reg_AL, port_in(port));
     break;
+  }
 
   //--- IN AX, imm8 ---
   case 0xE5: {
     emu88_uint8 port = fetch_ip_byte();
+    emu88_uint8 width = op_size_32 ? 4 : 2;
+    if (protected_mode() && !check_io_permission(port, width)) {
+      raise_exception(13, 0);
+      break;
+    }
     if (op_size_32) set_reg32(reg_AX, port_in16(port) | (emu88_uint32(port_in16(port + 2)) << 16));
     else regs[reg_AX] = port_in16(port);
     break;
   }
 
   //--- OUT imm8, AL ---
-  case 0xE6:
-    port_out(fetch_ip_byte(), get_reg8(reg_AL));
+  case 0xE6: {
+    emu88_uint8 port = fetch_ip_byte();
+    if (protected_mode() && !check_io_permission(port, 1)) {
+      raise_exception(13, 0);
+      break;
+    }
+    port_out(port, get_reg8(reg_AL));
     break;
+  }
 
   //--- OUT imm8, AX ---
   case 0xE7: {
     emu88_uint8 port = fetch_ip_byte();
+    emu88_uint8 width = op_size_32 ? 4 : 2;
+    if (protected_mode() && !check_io_permission(port, width)) {
+      raise_exception(13, 0);
+      break;
+    }
     if (op_size_32) {
       emu88_uint32 val = get_reg32(reg_AX);
       port_out16(port, val & 0xFFFF);
@@ -2347,27 +2813,43 @@ void emu88::execute(void) {
     break;
   }
 
-  //--- CALL near rel16 ---
+  //--- CALL near rel16/rel32 ---
   case 0xE8: {
-    emu88_int16 disp = (emu88_int16)fetch_ip_word();
-    push_word(ip);
-    ip += disp;
+    if (op_size_32) {
+      emu88_int32 disp = (emu88_int32)fetch_ip_dword();
+      push_dword(ip);
+      ip += disp;
+    } else {
+      emu88_int16 disp = (emu88_int16)fetch_ip_word();
+      push_word(ip & 0xFFFF);
+      ip += disp;
+    }
     break;
   }
 
-  //--- JMP near rel16 ---
+  //--- JMP near rel16/rel32 ---
   case 0xE9: {
-    emu88_int16 disp = (emu88_int16)fetch_ip_word();
-    ip += disp;
+    if (op_size_32) {
+      emu88_int32 disp = (emu88_int32)fetch_ip_dword();
+      ip += disp;
+    } else {
+      emu88_int16 disp = (emu88_int16)fetch_ip_word();
+      ip += disp;
+    }
     break;
   }
 
-  //--- JMP far ptr16:16 ---
+  //--- JMP far ptr16:16 / ptr16:32 ---
   case 0xEA: {
-    emu88_uint16 off = fetch_ip_word();
-    emu88_uint16 seg = fetch_ip_word();
-    sregs[seg_CS] = seg;
-    ip = off;
+    if (op_size_32) {
+      emu88_uint32 off = fetch_ip_dword();
+      emu88_uint16 seg = fetch_ip_word();
+      far_call_or_jmp(seg, off, false);
+    } else {
+      emu88_uint16 off = fetch_ip_word();
+      emu88_uint16 seg = fetch_ip_word();
+      far_call_or_jmp(seg, off, false);
+    }
     break;
   }
 
@@ -2379,39 +2861,64 @@ void emu88::execute(void) {
   }
 
   //--- IN AL, DX ---
-  case 0xEC:
-    set_reg8(reg_AL, port_in(regs[reg_DX]));
+  case 0xEC: {
+    emu88_uint16 port = regs[reg_DX];
+    if (protected_mode() && !check_io_permission(port, 1)) {
+      raise_exception(13, 0);
+      break;
+    }
+    set_reg8(reg_AL, port_in(port));
     break;
+  }
 
   //--- IN AX, DX ---
-  case 0xED:
+  case 0xED: {
+    emu88_uint16 port = regs[reg_DX];
+    emu88_uint8 width = op_size_32 ? 4 : 2;
+    if (protected_mode() && !check_io_permission(port, width)) {
+      raise_exception(13, 0);
+      break;
+    }
     if (op_size_32) {
-      emu88_uint16 port = regs[reg_DX];
       set_reg32(reg_AX, port_in16(port) | (emu88_uint32(port_in16(port + 2)) << 16));
     } else {
-      regs[reg_AX] = port_in16(regs[reg_DX]);
+      regs[reg_AX] = port_in16(port);
     }
     break;
+  }
 
   //--- OUT DX, AL ---
-  case 0xEE:
-    port_out(regs[reg_DX], get_reg8(reg_AL));
+  case 0xEE: {
+    emu88_uint16 port = regs[reg_DX];
+    if (protected_mode() && !check_io_permission(port, 1)) {
+      raise_exception(13, 0);
+      break;
+    }
+    port_out(port, get_reg8(reg_AL));
     break;
+  }
 
   //--- OUT DX, AX ---
-  case 0xEF:
+  case 0xEF: {
+    emu88_uint16 port = regs[reg_DX];
+    emu88_uint8 width = op_size_32 ? 4 : 2;
+    if (protected_mode() && !check_io_permission(port, width)) {
+      raise_exception(13, 0);
+      break;
+    }
     if (op_size_32) {
-      emu88_uint16 port = regs[reg_DX];
       emu88_uint32 val = get_reg32(reg_AX);
       port_out16(port, val & 0xFFFF);
       port_out16(port + 2, (val >> 16) & 0xFFFF);
     } else {
-      port_out16(regs[reg_DX], regs[reg_AX]);
+      port_out16(port, regs[reg_AX]);
     }
     break;
+  }
 
   //--- HLT ---
   case 0xF4:
+    if (protected_mode() && cpl != 0) { raise_exception(13, 0); break; }
     halt_cpu();
     break;
 
@@ -2440,9 +2947,19 @@ void emu88::execute(void) {
   //--- STC ---
   case 0xF9: set_flag(FLAG_CF); break;
   //--- CLI ---
-  case 0xFA: clear_flag(FLAG_IF); break;
+  case 0xFA:
+    // In V86 mode: IOPL must be 3 or #GP(0)
+    // In protected mode: CPL must be <= IOPL or #GP(0)
+    if (v86_mode() && get_iopl() < 3) { raise_exception(13, 0); break; }
+    if (protected_mode() && !v86_mode() && cpl > get_iopl()) { raise_exception(13, 0); break; }
+    clear_flag(FLAG_IF);
+    break;
   //--- STI ---
-  case 0xFB: set_flag(FLAG_IF); break;
+  case 0xFB:
+    if (v86_mode() && get_iopl() < 3) { raise_exception(13, 0); break; }
+    if (protected_mode() && !v86_mode() && cpl > get_iopl()) { raise_exception(13, 0); break; }
+    set_flag(FLAG_IF);
+    break;
   //--- CLD ---
   case 0xFC: clear_flag(FLAG_DF); break;
   //--- STD ---
@@ -2518,11 +3035,41 @@ void emu88::execute(void) {
   //--- BOUND (80186+) ---
   case 0x62: {
     emu88_uint8 modrm = fetch_ip_byte();
-    modrm_result mr = decode_modrm(modrm);
-    emu88_int16 idx = (emu88_int16)regs[mr.reg_field];
-    emu88_int16 lo = (emu88_int16)get_rm16(mr);
-    emu88_int16 hi = (emu88_int16)fetch_word(mr.seg, mr.offset + 2);
-    if (idx < lo || idx > hi) do_interrupt(5);
+    modrm_result mr = addr_size_32 ? decode_modrm_32(modrm) : decode_modrm(modrm);
+    if (mr.is_register) { raise_exception_no_error(6); break; }  // #UD for register operand
+    if (op_size_32) {
+      emu88_int32 idx = (emu88_int32)get_reg32(mr.reg_field);
+      emu88_int32 lo = (emu88_int32)fetch_dword(mr.seg, mr.offset);
+      emu88_int32 hi = (emu88_int32)fetch_dword(mr.seg, mr.offset + 4);
+      if (idx < lo || idx > hi) raise_exception_no_error(5);
+    } else {
+      emu88_int16 idx = (emu88_int16)regs[mr.reg_field];
+      emu88_int16 lo = (emu88_int16)fetch_word(mr.seg, mr.offset);
+      emu88_int16 hi = (emu88_int16)fetch_word(mr.seg, mr.offset + 2);
+      if (idx < lo || idx > hi) raise_exception_no_error(5);
+    }
+    break;
+  }
+
+  //--- ARPL r/m16, r16 (286+ protected mode) ---
+  case 0x63: {
+    if (protected_mode()) {
+      emu88_uint8 modrm = fetch_ip_byte();
+      modrm_result mr = decode_modrm(modrm);
+      emu88_uint16 dst = get_rm16(mr);
+      emu88_uint16 src = regs[mr.reg_field];
+      if ((dst & 3) < (src & 3)) {
+        dst = (dst & 0xFFFC) | (src & 3);
+        set_rm16(mr, dst);
+        set_flag(FLAG_ZF);
+      } else {
+        clear_flag(FLAG_ZF);
+      }
+    } else {
+      // In real mode, 0x63 is undefined — skip modrm
+      emu88_uint8 modrm = fetch_ip_byte();
+      (void)modrm;
+    }
     break;
   }
 
@@ -2586,25 +3133,65 @@ void emu88::execute(void) {
   //--- ENTER (80186+) ---
   case 0xC8: {
     emu88_uint16 alloc_size = fetch_ip_word();
-    emu88_uint8 nesting = fetch_ip_byte();
-    push_word(regs[reg_BP]);
-    emu88_uint16 frame_ptr = regs[reg_SP];
-    if (nesting > 0) {
-      for (int i = 1; i < nesting; i++) {
-        regs[reg_BP] -= 2;
-        push_word(fetch_word(sregs[seg_SS], regs[reg_BP]));
+    emu88_uint8 nesting = fetch_ip_byte() & 0x1F;  // mod 32
+    if (op_size_32) {
+      // Probe final ESP for write access (ENTER checks final stack pointer)
+      emu88_uint32 total_push = (nesting > 0) ? 4 * ((emu88_uint32)nesting + 1) : 4;
+      emu88_uint32 final_esp = get_esp() - total_push - alloc_size;
+      emu88_uint32 probe_off = stack_32() ? final_esp : (emu88_uint16)final_esp;
+      if (!check_segment_write(sregs[seg_SS], probe_off, 1)) break;
+      if (paging_enabled()) {
+        translate_linear(effective_address(sregs[seg_SS], probe_off), true);
+        if (exception_pending) break;
       }
-      push_word(frame_ptr);
+      push_dword(get_reg32(reg_BP));
+      emu88_uint32 frame_ptr = get_esp();
+      if (nesting > 0) {
+        for (int i = 1; i < nesting; i++) {
+          set_reg32(reg_BP, get_reg32(reg_BP) - 4);
+          push_dword(fetch_dword(sregs[seg_SS], stack_32() ? get_reg32(reg_BP) : regs[reg_BP]));
+        }
+        push_dword(frame_ptr);
+      }
+      set_reg32(reg_BP, frame_ptr);
+      if (stack_32()) set_esp(get_esp() - alloc_size);
+      else regs[reg_SP] -= alloc_size;
+    } else {
+      // Probe final SP for write access
+      emu88_uint16 total_push = (nesting > 0) ? 2 * (nesting + 1) : 2;
+      emu88_uint16 final_sp = regs[reg_SP] - total_push - alloc_size;
+      if (!check_segment_write(sregs[seg_SS], final_sp, 1)) break;
+      if (paging_enabled()) {
+        translate_linear(effective_address(sregs[seg_SS], final_sp), true);
+        if (exception_pending) break;
+      }
+      push_word(regs[reg_BP]);
+      emu88_uint16 frame_ptr = regs[reg_SP];
+      if (nesting > 0) {
+        for (int i = 1; i < nesting; i++) {
+          regs[reg_BP] -= 2;
+          push_word(fetch_word(sregs[seg_SS], regs[reg_BP]));
+        }
+        push_word(frame_ptr);
+      }
+      regs[reg_BP] = frame_ptr;
+      regs[reg_SP] -= alloc_size;
     }
-    regs[reg_BP] = frame_ptr;
-    regs[reg_SP] -= alloc_size;
     break;
   }
 
   //--- LEAVE (80186+) ---
   case 0xC9:
-    regs[reg_SP] = regs[reg_BP];
-    regs[reg_BP] = pop_word();
+    // SP/ESP ← BP/EBP depends on stack address size (B bit), not operand size
+    if (stack_32())
+      set_esp(get_reg32(reg_BP));
+    else
+      regs[reg_SP] = regs[reg_BP];
+    // Pop BP/EBP depends on operand size
+    if (op_size_32)
+      set_reg32(reg_BP, pop_dword());
+    else
+      regs[reg_BP] = pop_word();
     break;
 
   //--- 0x0F two-byte opcode prefix (286+) ---
@@ -2612,7 +3199,117 @@ void emu88::execute(void) {
     emu88_uint8 op2 = fetch_ip_byte();
     switch (op2) {
 
-    // SGDT/SIDT/LGDT/LIDT/SMSW/LMSW (0x0F 0x01)
+    // SLDT/STR/LLDT/LTR/VERR/VERW (0x0F 0x00)
+    case 0x00: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      modrm_result mr = decode_modrm(modrm);
+      switch (mr.reg_field) {
+      case 0: // SLDT: store LDT selector
+        set_rm16(mr, ldtr);
+        break;
+      case 1: // STR: store Task Register selector
+        set_rm16(mr, tr);
+        break;
+      case 2: { // LLDT: load LDT register
+        emu88_uint16 sel = get_rm16(mr);
+        ldtr = sel;
+        if ((sel & 0xFFFC) == 0) {
+          ldtr_cache.valid = false;
+          ldtr_cache.base = 0;
+          ldtr_cache.limit = 0;
+        } else {
+          emu88_uint16 index = sel >> 3;
+          if ((emu88_uint32)index * 8 + 7 > (emu88_uint32)gdtr_limit) {
+            raise_exception(13, sel & 0xFFFC);
+            break;
+          }
+          emu88_uint8 desc[8];
+          read_descriptor(gdtr_base, index, desc);
+          parse_descriptor(desc, ldtr_cache);
+        }
+        break;
+      }
+      case 3: { // LTR: load Task Register
+        emu88_uint16 sel = get_rm16(mr);
+        tr = sel;
+        if ((sel & 0xFFFC) == 0) {
+          tr_cache.valid = false;
+          tr_cache.base = 0;
+          tr_cache.limit = 0;
+        } else {
+          emu88_uint16 index = sel >> 3;
+          if ((emu88_uint32)index * 8 + 7 > (emu88_uint32)gdtr_limit) {
+            raise_exception(13, sel & 0xFFFC);
+            break;
+          }
+          emu88_uint8 desc[8];
+          read_descriptor(gdtr_base, index, desc);
+          parse_descriptor(desc, tr_cache);
+          // Mark TSS as busy (set bit 1 of type field)
+          desc[5] |= 0x02;
+          emu88_uint32 desc_addr = gdtr_base + (emu88_uint32)index * 8;
+          mem->store_mem(desc_addr + 5, desc[5]);
+        }
+        break;
+      }
+      case 4: { // VERR: verify segment readable
+        emu88_uint16 sel = get_rm16(mr);
+        if ((sel & 0xFFFC) == 0) { clear_flag(FLAG_ZF); break; }
+        emu88_uint16 index = sel >> 3;
+        bool use_ldt = (sel & 4) != 0;
+        emu88_uint32 tbase = use_ldt ? ldtr_cache.base : gdtr_base;
+        emu88_uint32 tlimit = use_ldt ? ldtr_cache.limit : (emu88_uint32)gdtr_limit;
+        if ((emu88_uint32)index * 8 + 7 > tlimit) { clear_flag(FLAG_ZF); break; }
+        emu88_uint8 desc[8];
+        read_descriptor(tbase, index, desc);
+        emu88_uint8 access = desc[5];
+        // Must be present, code/data segment
+        if (!(access & 0x80) || !(access & 0x10)) { clear_flag(FLAG_ZF); break; }
+        // Code segment must be readable (bit 1)
+        if ((access & 0x08) && !(access & 0x02)) { clear_flag(FLAG_ZF); break; }
+        // Privilege check: for non-conforming code, DPL must be >= MAX(CPL, RPL)
+        if ((access & 0x08) && !(access & 0x04)) {
+          emu88_uint8 dpl = (access >> 5) & 3;
+          emu88_uint8 rpl = sel & 3;
+          if (dpl < cpl || dpl < rpl) { clear_flag(FLAG_ZF); break; }
+        }
+        // Data segments: DPL must be >= MAX(CPL, RPL)
+        if (!(access & 0x08)) {
+          emu88_uint8 dpl = (access >> 5) & 3;
+          emu88_uint8 rpl = sel & 3;
+          if (dpl < cpl || dpl < rpl) { clear_flag(FLAG_ZF); break; }
+        }
+        set_flag(FLAG_ZF);
+        break;
+      }
+      case 5: { // VERW: verify segment writable
+        emu88_uint16 sel = get_rm16(mr);
+        if ((sel & 0xFFFC) == 0) { clear_flag(FLAG_ZF); break; }
+        emu88_uint16 index = sel >> 3;
+        bool use_ldt = (sel & 4) != 0;
+        emu88_uint32 tbase = use_ldt ? ldtr_cache.base : gdtr_base;
+        emu88_uint32 tlimit = use_ldt ? ldtr_cache.limit : (emu88_uint32)gdtr_limit;
+        if ((emu88_uint32)index * 8 + 7 > tlimit) { clear_flag(FLAG_ZF); break; }
+        emu88_uint8 desc[8];
+        read_descriptor(tbase, index, desc);
+        emu88_uint8 access = desc[5];
+        // Must be present, data segment (not code), and writable
+        if (!(access & 0x80) || !(access & 0x10)) { clear_flag(FLAG_ZF); break; }
+        if ((access & 0x08) || !(access & 0x02)) { clear_flag(FLAG_ZF); break; }
+        // Privilege check: DPL must be >= MAX(CPL, RPL)
+        emu88_uint8 dpl = (access >> 5) & 3;
+        emu88_uint8 rpl = sel & 3;
+        if (dpl < cpl || dpl < rpl) { clear_flag(FLAG_ZF); break; }
+        set_flag(FLAG_ZF);
+        break;
+      }
+      default:
+        break;
+      }
+      break;
+    }
+
+    // SGDT/SIDT/LGDT/LIDT/SMSW/LMSW/INVLPG (0x0F 0x01)
     case 0x01: {
       emu88_uint8 modrm = fetch_ip_byte();
       modrm_result mr = decode_modrm(modrm);
@@ -2648,13 +3345,59 @@ void emu88::execute(void) {
       case 6: // LMSW: load CR0 low 16 bits (PE bit can be set but not cleared)
         {
           emu88_uint16 val = mr.is_register ? regs[mr.rm_field] : get_rm16(mr);
-          cr0 = (cr0 & 0xFFFF0000) | val;
-          // In real mode emulation, we just store it but don't actually switch to protected mode
+          // PE bit can be set but not cleared via LMSW
+          emu88_uint32 new_cr0 = (cr0 & 0xFFFF0000) | val;
+          if (cr0 & CR0_PE) new_cr0 |= CR0_PE;  // can't clear PE via LMSW
+          cr0 = new_cr0;
         }
+        break;
+      case 7: // INVLPG: invalidate TLB entry (NOP for emulator, no TLB cache)
         break;
       default:
         break;
       }
+      break;
+    }
+
+    // LAR r16/r32, r/m16 (0x0F 0x02) — Load Access Rights
+    case 0x02: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      modrm_result mr = decode_modrm(modrm);
+      emu88_uint16 sel = get_rm16(mr);
+      if ((sel & 0xFFFC) == 0) { clear_flag(FLAG_ZF); break; }
+      emu88_uint16 index = sel >> 3;
+      bool use_ldt = (sel & 4) != 0;
+      emu88_uint32 tbase = use_ldt ? ldtr_cache.base : gdtr_base;
+      emu88_uint32 tlimit = use_ldt ? ldtr_cache.limit : (emu88_uint32)gdtr_limit;
+      if ((emu88_uint32)index * 8 + 7 > tlimit) { clear_flag(FLAG_ZF); break; }
+      emu88_uint8 desc[8];
+      read_descriptor(tbase, index, desc);
+      // Return access byte and flags in bits 23:8 of result
+      emu88_uint32 result = ((emu88_uint32)desc[5] << 8) | ((emu88_uint32)(desc[6] & 0xF0) << 8);
+      if (op_size_32) set_reg32(mr.reg_field, result);
+      else regs[mr.reg_field] = result & 0xFFFF;
+      set_flag(FLAG_ZF);
+      break;
+    }
+
+    // LSL r16/r32, r/m16 (0x0F 0x03) — Load Segment Limit
+    case 0x03: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      modrm_result mr = decode_modrm(modrm);
+      emu88_uint16 sel = get_rm16(mr);
+      if ((sel & 0xFFFC) == 0) { clear_flag(FLAG_ZF); break; }
+      emu88_uint16 index = sel >> 3;
+      bool use_ldt = (sel & 4) != 0;
+      emu88_uint32 tbase = use_ldt ? ldtr_cache.base : gdtr_base;
+      emu88_uint32 tlimit = use_ldt ? ldtr_cache.limit : (emu88_uint32)gdtr_limit;
+      if ((emu88_uint32)index * 8 + 7 > tlimit) { clear_flag(FLAG_ZF); break; }
+      emu88_uint8 desc[8];
+      read_descriptor(tbase, index, desc);
+      SegDescCache tmp;
+      parse_descriptor(desc, tmp);
+      if (op_size_32) set_reg32(mr.reg_field, tmp.limit);
+      else regs[mr.reg_field] = tmp.limit & 0xFFFF;
+      set_flag(FLAG_ZF);
       break;
     }
 
@@ -2665,8 +3408,23 @@ void emu88::execute(void) {
       emu88_uint8 r = modrm & 7;
       switch (cr) {
       case 0: set_reg32(r, cr0); break;
-      default: set_reg32(r, 0); break;  // CR2/CR3/CR4: return 0
+      case 2: set_reg32(r, cr2); break;
+      case 3: set_reg32(r, cr3); break;
+      case 4: set_reg32(r, cr4); break;
+      default: set_reg32(r, 0); break;
       }
+      break;
+    }
+
+    // MOV r32, DRn (0x0F 0x21) — debug registers
+    case 0x21: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      emu88_uint8 drn = (modrm >> 3) & 7;
+      emu88_uint8 r = modrm & 7;
+      // DR4/DR5 alias to DR6/DR7
+      if (drn == 4) drn = 6;
+      if (drn == 5) drn = 7;
+      set_reg32(r, dr[drn]);
       break;
     }
 
@@ -2676,9 +3434,37 @@ void emu88::execute(void) {
       emu88_uint8 cr = (modrm >> 3) & 7;
       emu88_uint8 r = modrm & 7;
       switch (cr) {
-      case 0: cr0 = get_reg32(r); break;
-      default: break;  // ignore writes to other CRs
+      case 0: {
+        emu88_uint32 old_cr0 = cr0;
+        cr0 = get_reg32(r);
+        // Task 4: CR0 mode transition handling
+        // When PE transitions 1->0 (entering real mode), segment caches
+        // retain their protected mode values until reloaded.
+        // When PE transitions 0->1 (entering protected mode), segment
+        // caches retain their real mode values. The next far JMP loads
+        // a proper protected mode CS selector.
+        // No special action needed here beyond storing the value,
+        // since load_segment() already checks protected_mode().
+        (void)old_cr0;
+        break;
       }
+      case 2: cr2 = get_reg32(r); break;
+      case 3: cr3 = get_reg32(r); break;
+      case 4: cr4 = get_reg32(r); break;
+      default: break;
+      }
+      break;
+    }
+
+    // MOV DRn, r32 (0x0F 0x23) — debug registers
+    case 0x23: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      emu88_uint8 drn = (modrm >> 3) & 7;
+      emu88_uint8 r = modrm & 7;
+      // DR4/DR5 alias to DR6/DR7
+      if (drn == 4) drn = 6;
+      if (drn == 5) drn = 7;
+      dr[drn] = get_reg32(r);
       break;
     }
 
@@ -2695,14 +3481,49 @@ void emu88::execute(void) {
     case 0x08:
       break;
 
+    // RDTSC (0x0F 0x31) - Read Time-Stamp Counter (Task 6)
+    case 0x31:
+      set_reg32(reg_AX, (emu88_uint32)(cycles & 0xFFFFFFFF));
+      set_reg32(reg_DX, (emu88_uint32)((cycles >> 32) & 0xFFFFFFFF));
+      break;
+
+    // CPUID (0x0F 0xA2) - CPU Identification (Task 5)
+    case 0xA2: {
+      emu88_uint32 eax_in = get_reg32(reg_AX);
+      switch (eax_in) {
+      case 0:
+        // Max CPUID level = 1, vendor = "GenuineIntel"
+        set_reg32(reg_AX, 1);
+        set_reg32(reg_BX, 0x756E6547);  // "Genu"
+        set_reg32(reg_DX, 0x49656E69);  // "ineI"
+        set_reg32(reg_CX, 0x6C65746E);  // "ntel"
+        break;
+      case 1:
+        // Family 3 (386), Model 0, Stepping 0
+        set_reg32(reg_AX, 0x00000300);
+        set_reg32(reg_BX, 0);
+        set_reg32(reg_CX, 0);
+        // Feature flags: bit 4 = PSE (page size extensions)
+        set_reg32(reg_DX, 0x00000010);
+        break;
+      default:
+        set_reg32(reg_AX, 0);
+        set_reg32(reg_BX, 0);
+        set_reg32(reg_CX, 0);
+        set_reg32(reg_DX, 0);
+        break;
+      }
+      break;
+    }
+
     // PUSH FS (0x0F 0xA0)
-    case 0xA0: push_word(sregs[seg_FS]); break;
+    case 0xA0: if (op_size_32) push_dword((emu88_uint32)sregs[seg_FS]); else push_word(sregs[seg_FS]); break;
     // POP FS (0x0F 0xA1)
-    case 0xA1: sregs[seg_FS] = pop_word(); break;
+    case 0xA1: load_segment(seg_FS, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
     // PUSH GS (0x0F 0xA8)
-    case 0xA8: push_word(sregs[seg_GS]); break;
+    case 0xA8: if (op_size_32) push_dword((emu88_uint32)sregs[seg_GS]); else push_word(sregs[seg_GS]); break;
     // POP GS (0x0F 0xA9)
-    case 0xA9: sregs[seg_GS] = pop_word(); break;
+    case 0xA9: load_segment(seg_GS, op_size_32 ? (emu88_uint16)pop_dword() : pop_word()); break;
     // MOVZX r16/r32, r/m8 (0x0F 0xB6)
     case 0xB6: {
       emu88_uint8 modrm = fetch_ip_byte();
@@ -2769,7 +3590,6 @@ void emu88::execute(void) {
     case 0x84: case 0x85: case 0x86: case 0x87:
     case 0x88: case 0x89: case 0x8A: case 0x8B:
     case 0x8C: case 0x8D: case 0x8E: case 0x8F: {
-      emu88_int16 disp = (emu88_int16)fetch_ip_word();
       bool cond = false;
       switch (op2 & 0x0F) {
         case 0x0: cond = get_flag(FLAG_OF); break;
@@ -2789,7 +3609,13 @@ void emu88::execute(void) {
         case 0xE: cond = get_flag(FLAG_ZF) || (get_flag(FLAG_SF) != get_flag(FLAG_OF)); break;
         case 0xF: cond = !get_flag(FLAG_ZF) && (get_flag(FLAG_SF) == get_flag(FLAG_OF)); break;
       }
-      if (cond) ip += disp;
+      if (op_size_32) {
+        emu88_int32 disp = (emu88_int32)fetch_ip_dword();
+        if (cond) ip += disp;
+      } else {
+        emu88_int16 disp = (emu88_int16)fetch_ip_word();
+        if (cond) ip += disp;
+      }
       break;
     }
     // MOV sreg (0x0F extended segment ops) - handle FS/GS load/store
@@ -2798,10 +3624,10 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       if (op_size_32) {
         set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-        sregs[seg_SS] = fetch_word(mr.seg, mr.offset + 4);
+        load_segment(seg_SS, fetch_word(mr.seg, mr.offset + 4));
       } else {
         regs[mr.reg_field] = get_rm16(mr);
-        sregs[seg_SS] = fetch_word(mr.seg, mr.offset + 2);
+        load_segment(seg_SS, fetch_word(mr.seg, mr.offset + 2));
       }
       break;
     }
@@ -2810,10 +3636,10 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       if (op_size_32) {
         set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-        sregs[seg_FS] = fetch_word(mr.seg, mr.offset + 4);
+        load_segment(seg_FS, fetch_word(mr.seg, mr.offset + 4));
       } else {
         regs[mr.reg_field] = get_rm16(mr);
-        sregs[seg_FS] = fetch_word(mr.seg, mr.offset + 2);
+        load_segment(seg_FS, fetch_word(mr.seg, mr.offset + 2));
       }
       break;
     }
@@ -2822,10 +3648,10 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       if (op_size_32) {
         set_reg32(mr.reg_field, fetch_dword(mr.seg, mr.offset));
-        sregs[seg_GS] = fetch_word(mr.seg, mr.offset + 4);
+        load_segment(seg_GS, fetch_word(mr.seg, mr.offset + 4));
       } else {
         regs[mr.reg_field] = get_rm16(mr);
-        sregs[seg_GS] = fetch_word(mr.seg, mr.offset + 2);
+        load_segment(seg_GS, fetch_word(mr.seg, mr.offset + 2));
       }
       break;
     }
@@ -3129,7 +3955,6 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       emu88_uint8 dst = get_rm8(mr);
       emu88_uint8 al = get_reg8(reg_AL);
-      emu88_uint8 tmp = al - dst;
       set_flags_sub8(al, dst, 0);
       if (al == dst) {
         set_flag(FLAG_ZF);
@@ -3203,6 +4028,53 @@ void emu88::execute(void) {
       break;
     }
 
+    // Multi-byte NOP (0x0F 0x1F) — consume modrm and displacement
+    case 0x1F: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      decode_modrm(modrm);  // consume modrm + displacement bytes
+      break;
+    }
+
+    // RDMSR (0x0F 0x32) — stub: return 0 for all MSRs
+    case 0x32: {
+      // ECX = MSR index (ignored), return EDX:EAX = 0
+      set_reg32(reg_AX, 0);
+      set_reg32(reg_DX, 0);
+      break;
+    }
+
+    // WRMSR (0x0F 0x30) — stub: ignore writes to all MSRs
+    case 0x30: {
+      // ECX = MSR index, EDX:EAX = value (all ignored)
+      break;
+    }
+
+    // CMPXCHG8B m64 (0x0F 0xC7)
+    case 0xC7: {
+      emu88_uint8 modrm = fetch_ip_byte();
+      modrm_result mr = decode_modrm(modrm);
+      // reg_field must be 1 for CMPXCHG8B
+      if (mr.reg_field == 1 && !mr.is_register) {
+        // Read 64-bit value from memory (low dword first)
+        emu88_uint32 lo = fetch_dword(mr.seg, mr.offset);
+        emu88_uint32 hi = fetch_dword(mr.seg, mr.offset + 4);
+        emu88_uint32 eax = get_reg32(reg_AX);
+        emu88_uint32 edx = get_reg32(reg_DX);
+        if (lo == eax && hi == edx) {
+          // Equal: set ZF, store ECX:EBX into m64
+          set_flag(FLAG_ZF);
+          store_dword(mr.seg, mr.offset, get_reg32(reg_BX));
+          store_dword(mr.seg, mr.offset + 4, get_reg32(reg_CX));
+        } else {
+          // Not equal: clear ZF, load m64 into EDX:EAX
+          clear_flag(FLAG_ZF);
+          set_reg32(reg_AX, lo);
+          set_reg32(reg_DX, hi);
+        }
+      }
+      break;
+    }
+
     default:
       emu88_fatal("Unimplemented 0x0F opcode: 0x%02X at %04X:%04X", op2, sregs[seg_CS], ip - 2);
       halted = true;
@@ -3219,4 +4091,9 @@ void emu88::execute(void) {
     unimplemented_opcode(opcode);
     break;
   }
+
+  // In 16-bit code segments (real mode, V86 mode, or 16-bit pmode),
+  // mask EIP to 16 bits so relative jumps/calls wrap correctly.
+  if (!code_32())
+    ip &= 0xFFFF;
 }

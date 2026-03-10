@@ -448,6 +448,12 @@ void dos_machine::dispatch_bios(uint8_t vector) {
 }
 
 void dos_machine::do_interrupt(emu88_uint8 vector) {
+  // In protected mode, skip the IVT fast-path check — interrupts go through IDT
+  if (protected_mode()) {
+    emu88::do_interrupt(vector);
+    return;
+  }
+
   // Check if IVT still points to our BIOS stub (not hooked by DOS)
   uint32_t ivt = vector * 4;
   uint16_t off = mem->fetch_mem16(ivt);

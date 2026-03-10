@@ -37,6 +37,42 @@ public:
     FLAG_OF = 0x0800    // Overflow
   };
 
+  // EFLAGS bit positions (386+)
+  enum EFlagBits {
+    EFLAG_IOPL_MASK = 0x3000,  // I/O privilege level (bits 12-13)
+    EFLAG_NT   = 0x4000,       // Nested task
+    EFLAG_RF   = 0x10000,      // Resume flag
+    EFLAG_VM   = 0x20000,      // Virtual 8086 mode
+    EFLAG_AC   = 0x40000,      // Alignment check
+    EFLAG_VIF  = 0x80000,      // Virtual interrupt flag
+    EFLAG_VIP  = 0x100000,     // Virtual interrupt pending
+    EFLAG_ID   = 0x200000      // ID flag (CPUID support)
+  };
+
+  // Segment descriptor cache (hidden part of segment registers)
+  struct SegDescCache {
+    emu88_uint32 base;      // 32-bit base address
+    emu88_uint32 limit;     // Effective limit (granularity-adjusted)
+    emu88_uint8 access;     // Access byte: P(7) DPL(6:5) S(4) Type(3:0)
+    emu88_uint8 flags;      // Flags: G(3) D/B(2) L(1) AVL(0)
+    bool valid;             // Descriptor loaded and present
+  };
+
+  // CR0 bit definitions
+  enum CR0Bits {
+    CR0_PE = 0x00000001,  // Protection Enable
+    CR0_MP = 0x00000002,  // Monitor Coprocessor
+    CR0_EM = 0x00000004,  // Emulation
+    CR0_TS = 0x00000008,  // Task Switched
+    CR0_ET = 0x00000010,  // Extension Type
+    CR0_NE = 0x00000020,  // Numeric Error
+    CR0_WP = 0x00010000,  // Write Protect
+    CR0_AM = 0x00040000,  // Alignment Mask
+    CR0_NW = 0x20000000,  // Not Write-through
+    CR0_CD = 0x40000000,  // Cache Disable
+    CR0_PG = 0x80000000   // Paging
+  };
+
   // General-purpose registers (AX, CX, DX, BX, SP, BP, SI, DI)
   emu88_uint16 regs[8];
 
@@ -46,8 +82,12 @@ public:
   // Segment registers (ES, CS, SS, DS, FS, GS)
   emu88_uint16 sregs[6];
 
-  // Instruction pointer
-  emu88_uint16 ip;
+  // Segment descriptor caches (hidden part of each segment register)
+  SegDescCache seg_cache[6];
+
+  // Instruction pointer (32-bit for protected mode)
+  emu88_uint32 ip;
+  emu88_uint32 insn_ip;  // Start IP of current instruction (for fault exceptions)
 
   // Flags register
   emu88_uint16 flags;
@@ -60,7 +100,26 @@ public:
   emu88_uint16 gdtr_limit;
   emu88_uint32 idtr_base;
   emu88_uint16 idtr_limit;
+
+  // Control registers
   emu88_uint32 cr0;  // Machine Status Word (MSW) is low 16 bits
+  emu88_uint32 cr2;  // Page fault linear address
+  emu88_uint32 cr3;  // Page directory base register (PDBR)
+  emu88_uint32 cr4;  // Control extensions
+
+  // Debug registers (DR0-DR3: breakpoint addresses, DR6: status, DR7: control)
+  emu88_uint32 dr[8];
+
+  // LDT register
+  emu88_uint16 ldtr;         // LDT selector
+  SegDescCache ldtr_cache;   // LDT descriptor cache
+
+  // Task register
+  emu88_uint16 tr;           // Task register selector
+  SegDescCache tr_cache;     // TSS descriptor cache
+
+  // Current privilege level
+  emu88_uint8 cpl;
 
   // Memory and trace
   emu88_mem *mem;
@@ -75,6 +134,10 @@ public:
   emu88_uint8 int_vector;
   bool halted;
 
+  // Exception state (to detect double/triple faults)
+  bool in_exception;
+  bool exception_pending;  // Set by raise_exception to abort current instruction
+
   // Segment override state (per-instruction)
   int seg_override;       // -1 = none, 0-5 = seg index
 
@@ -83,8 +146,8 @@ public:
   RepType rep_prefix;
 
   // 386 operand/address size prefix state (per-instruction)
-  bool op_size_32;        // true when 0x66 prefix active
-  bool addr_size_32;      // true when 0x67 prefix active
+  bool op_size_32;        // true when 32-bit operands active
+  bool addr_size_32;      // true when 32-bit addressing active
 
   // Parity lookup table
   emu88_uint8 parity_table[256];
@@ -105,6 +168,15 @@ public:
   bool check_interrupts(void);
   virtual void halt_cpu(void);
   virtual void unimplemented_opcode(emu88_uint8 opcode);
+
+  // Protected mode interrupt dispatch
+  void do_interrupt_pm(emu88_uint8 vector, bool has_error_code = false,
+                       emu88_uint32 error_code = 0, bool is_software_int = false);
+
+  // Exception handling
+  void raise_exception(emu88_uint8 vector, emu88_uint32 error_code = 0);
+  void raise_exception_no_error(emu88_uint8 vector);
+  void triple_fault(void);
 
   // Configuration
   virtual void set_debug(bool new_debug) { debug = new_debug; }
@@ -127,6 +199,14 @@ public:
     regs_hi[r] = (val >> 16) & 0xFFFF;
   }
 
+  // EIP access (386+)
+  emu88_uint32 get_eip() const { return ip; }
+  void set_eip(emu88_uint32 val) { ip = val; }
+
+  // ESP access (386+)
+  emu88_uint32 get_esp() const { return get_reg32(reg_SP); }
+  void set_esp(emu88_uint32 val) { set_reg32(reg_SP, val); }
+
   // EFLAGS access (386+)
   emu88_uint32 get_eflags() const { return EMU88_MK32(flags, eflags_hi); }
   void set_eflags(emu88_uint32 val) { flags = val & 0xFFFF; eflags_hi = (val >> 16) & 0xFFFF; }
@@ -135,9 +215,42 @@ public:
   bool operand_32() const { return op_size_32; }
   bool address_32() const { return addr_size_32; }
 
+  // Protected mode helpers
+  bool protected_mode() const { return (cr0 & CR0_PE) != 0; }
+  bool paging_enabled() const { return (cr0 & CR0_PG) != 0; }
+  bool code_32() const { return protected_mode() && (seg_cache[seg_CS].flags & 0x04); }
+  bool stack_32() const { return protected_mode() && (seg_cache[seg_SS].flags & 0x04); }
+  emu88_uint8 get_iopl() const { return (flags >> 12) & 3; }
+
   // Segment register access
   emu88_uint16 get_sreg(emu88_uint8 s) const { return sregs[s]; }
   void set_sreg(emu88_uint8 s, emu88_uint16 val) { sregs[s] = val; }
+
+  // Segment loading (updates descriptor cache)
+  void load_segment(int seg_idx, emu88_uint16 selector);
+  void load_segment_real(int seg_idx, emu88_uint16 selector);
+
+  // Far control transfer (handles call gates in protected mode)
+  void far_call_or_jmp(emu88_uint16 selector, emu88_uint32 offset, bool is_call);
+  void invalidate_segments_for_cpl();  // Null out DS/ES/FS/GS if DPL < CPL
+
+  // V86 mode helper
+  bool v86_mode() const { return (get_eflags() & EFLAG_VM) != 0; }
+
+  // I/O permission bitmap check (returns true if I/O is allowed)
+  bool check_io_permission(emu88_uint16 port, emu88_uint8 width);
+
+  // Segment limit checking (returns true if access is within limit)
+  bool check_segment_limit(int seg_idx, emu88_uint32 offset, emu88_uint8 width) const;
+
+  // Segment access checking for protected mode memory access
+  bool check_segment_read(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width);
+  bool check_segment_write(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width);
+
+  // Descriptor table helpers
+  void read_descriptor(emu88_uint32 table_base, emu88_uint16 index,
+                       emu88_uint8 desc[8]);
+  static void parse_descriptor(const emu88_uint8 desc[8], SegDescCache &cache);
 
   // Flags helpers
   bool get_flag(emu88_uint16 f) const { return (flags & f) != 0; }
@@ -163,26 +276,33 @@ public:
   void set_flags_sub32(emu88_uint32 a, emu88_uint32 b, emu88_uint32 borrow);
   void set_flags_logic32(emu88_uint32 result);
 
-  // Memory access (segment-aware)
-  emu88_uint32 effective_address(emu88_uint16 seg, emu88_uint16 off) const {
-    return EMU88_MK20(seg, off);
-  }
+  // Memory access (segment-aware, supports protected mode)
+  emu88_uint32 effective_address(emu88_uint16 seg, emu88_uint32 off) const;
   emu88_uint16 default_segment(void) const;
-  emu88_uint8 fetch_byte(emu88_uint16 seg, emu88_uint16 off);
-  void store_byte(emu88_uint16 seg, emu88_uint16 off, emu88_uint8 val);
-  emu88_uint16 fetch_word(emu88_uint16 seg, emu88_uint16 off);
-  void store_word(emu88_uint16 seg, emu88_uint16 off, emu88_uint16 val);
+  emu88_uint8 fetch_byte(emu88_uint16 seg, emu88_uint32 off);
+  void store_byte(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 val);
+  emu88_uint16 fetch_word(emu88_uint16 seg, emu88_uint32 off);
+  void store_word(emu88_uint16 seg, emu88_uint32 off, emu88_uint16 val);
 
   // Memory access: 32-bit (386+)
-  emu88_uint32 fetch_dword(emu88_uint16 seg, emu88_uint16 off);
-  void store_dword(emu88_uint16 seg, emu88_uint16 off, emu88_uint32 val);
+  emu88_uint32 fetch_dword(emu88_uint16 seg, emu88_uint32 off);
+  void store_dword(emu88_uint16 seg, emu88_uint32 off, emu88_uint32 val);
+
+  // Linear address memory access (for descriptor table lookups, paging)
+  emu88_uint32 translate_linear(emu88_uint32 linear, bool write = false);
+  emu88_uint8 read_linear8(emu88_uint32 linear);
+  emu88_uint16 read_linear16(emu88_uint32 linear);
+  emu88_uint32 read_linear32(emu88_uint32 linear);
+  void write_linear8(emu88_uint32 linear, emu88_uint8 val);
+  void write_linear16(emu88_uint32 linear, emu88_uint16 val);
+  void write_linear32(emu88_uint32 linear, emu88_uint32 val);
 
   // Instruction stream
   emu88_uint8 fetch_ip_byte(void);
   emu88_uint16 fetch_ip_word(void);
   emu88_uint32 fetch_ip_dword(void);
 
-  // Stack operations
+  // Stack operations (protected mode aware - use ESP when stack_32)
   void push_word(emu88_uint16 val);
   emu88_uint16 pop_word(void);
   void push_dword(emu88_uint32 val);
@@ -190,7 +310,7 @@ public:
 
   // ModR/M decoding
   struct modrm_result {
-    emu88_uint16 seg;       // segment for memory operand
+    emu88_uint16 seg;       // segment selector for memory operand
     emu88_uint32 offset;    // offset for memory operand (32-bit for 386+ addressing)
     emu88_uint8 reg_field;  // reg field (bits 5-3)
     emu88_uint8 rm_field;   // r/m field (bits 2-0)
@@ -222,6 +342,7 @@ public:
   // Initialization
   void setup_parity(void);
   void reset(void);
+  void init_seg_caches(void);
 
 private:
   // ALU helpers — 8-bit and 16-bit (8088)
