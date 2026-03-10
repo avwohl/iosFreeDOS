@@ -70,19 +70,37 @@ jobs:
         run: |
           # CI builds produce different binaries than local (FAT timestamps),
           # so we must compute SHA256 after building and inject into disks.xml.
-          for img in fd/freedos_starter.img fd/freedos_hd.img fd/freedos_games.img; do
-            [ -f "$img" ] || continue
-            fname=$(basename "$img")
-            sha=$(shasum -a 256 "$img" | cut -d' ' -f1)
-            size=$(wc -c < "$img" | tr -d ' ')
-            echo "$fname: sha256=$sha size=$size"
-            # Update SHA256
-            sed -i '' "/<filename>$fname</{n;n;n;n;n;s|<sha256>.*</sha256>|<sha256>$sha</sha256>|;}" release_assets/disks.xml
-            # Update size
-            sed -i '' "/<filename>$fname</{n;n;n;s|<size>.*</size>|<size>$size</size>|;}" release_assets/disks.xml
-          done
-          echo "--- Updated disks.xml ---"
-          cat release_assets/disks.xml
+          python3 << 'PYEOF'
+          import hashlib, os, re
+
+          disks = {
+            "freedos_starter.img": "fd/freedos_starter.img",
+            "freedos_hd.img": "fd/freedos_hd.img",
+            "freedos_games.img": "fd/freedos_games.img",
+          }
+
+          xml_path = "release_assets/disks.xml"
+          xml = open(xml_path).read()
+
+          for fname, path in disks.items():
+              if not os.path.exists(path):
+                  print(f"SKIP: {fname} not found")
+                  continue
+              data = open(path, "rb").read()
+              sha = hashlib.sha256(data).hexdigest()
+              size = len(data)
+              print(f"{fname}: sha256={sha} size={size}")
+              # Replace SHA256 for this disk entry
+              pattern = f"(<filename>{fname}</filename>.*?<sha256>).*?(</sha256>)"
+              xml = re.sub(pattern, f"\\g<1>{sha}\\g<2>", xml, flags=re.DOTALL)
+              # Replace size for this disk entry
+              pattern = f"(<filename>{fname}</filename>.*?<size>).*?(</size>)"
+              xml = re.sub(pattern, f"\\g<1>{size}\\g<2>", xml, count=1, flags=re.DOTALL)
+
+          open(xml_path, "w").write(xml)
+          print("--- Updated disks.xml ---")
+          print(xml)
+          PYEOF
 
       - name: Verify disk catalog SHA256
         run: |
