@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<catalog version="8">
+<catalog version="9">
+    <disk>
+        <filename>freedos_starter.img</filename>
+        <name>FreeDOS Starter</name>
+        <type>hdd</type>
+        <description>22MB bootable FreeDOS with DOOM and Duke Nukem. Includes DPMI support. Small download.</description>
+        <size>23224320</size>
+        <license>GPL / Shareware</license>
+        <sha256>25bb18be35f6c8c48f030b53b6c51c0520a9116c8d06eeedbc9735a786e8f3a5</sha256>
+        <defaultDrive>128</defaultDrive>
+    </disk>
     <disk>
         <filename>freedos_hd.img</filename>
         <name>FreeDOS Hard Disk</name>
@@ -7,7 +17,7 @@
         <description>200MB bootable hard disk with FreeDOS 1.4, 230 utilities, archivers, editors, and disk tools.</description>
         <size>210051072</size>
         <license>GPL / Mixed Freeware</license>
-        <sha256>92488c5cd1b028af605f39276c43ada1b0ddb9cd7f33bd484dbe560b94294f4c</sha256>
+        <sha256>5d0202c4428370faddae908718076cd128a4ae3b57f0e89ee1d200bc42de54a8</sha256>
         <defaultDrive>128</defaultDrive>
     </disk>
     <disk>
@@ -17,7 +27,7 @@
         <description>200MB hard disk with 11 classic shareware games: Duke Nukem, Bio Menace, Jill of the Jungle, God of Thunder, Supaplex, and more. Mount as D: drive.</description>
         <size>210051072</size>
         <license>Mixed Freeware</license>
-        <sha256>539853f7e3a2e86365dc0132862a93e38aac8db104770a0acda03ec822f9284f</sha256>
+        <sha256>ec48efe6c97ff079fe640d84dac2bcf00a5027f6b95c8a21d3be33910dc99408</sha256>
         <defaultDrive>129</defaultDrive>
     </disk>
     <disk>

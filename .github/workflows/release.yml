@@ -48,6 +48,18 @@ jobs:
             https://www.awohl.com/freedos/FD14BNS.iso
           ls -lh fd/*.iso
 
+      - name: Download DOOM shareware
+        run: |
+          mkdir -p /tmp/doom_sw
+          # Original: https://archive.org/download/DoomsharewareEpisode/doom.ZIP
+          curl -L --retry 3 --connect-timeout 30 -o /tmp/doom_sw.zip \
+            https://www.awohl.com/freedos/doom.ZIP
+          cd /tmp/doom_sw && unzip -o /tmp/doom_sw.zip
+          ls -lh /tmp/doom_sw/DOOM.EXE /tmp/doom_sw/DOOM1.WAD
+
+      - name: Build starter disk image
+        run: scripts/build_starter_disk.sh
+
       - name: Build hard disk image
         run: scripts/build_hdd.sh
 
@@ -68,6 +80,10 @@ jobs:
           # Boot disk (if exists)
           if [ -f fd/freedos.img ]; then
             cp fd/freedos.img dist/
+          fi
+          # Starter disk image (if built)
+          if [ -f fd/freedos_starter.img ]; then
+            cp fd/freedos_starter.img dist/
           fi
           # Hard disk image (if built)
           if [ -f fd/freedos_hd.img ]; then
