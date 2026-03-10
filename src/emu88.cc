@@ -75,6 +75,7 @@ void emu88::reset(void) {
   cycles = 0;
   op_size_32 = false;
   addr_size_32 = false;
+  lock_ud = true;  // 386 behavior by default
   gdtr_base = 0; gdtr_limit = 0;
   idtr_base = 0; idtr_limit = 0x3FF;
   cr0 = 0; cr2 = 0; cr3 = 0; cr4 = 0;
@@ -183,7 +184,17 @@ emu88_uint16 emu88::default_segment(void) const {
 }
 
 bool emu88::check_segment_read(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width) {
-  if (!protected_mode() || v86_mode() || exception_pending) return true;
+  if (exception_pending) return true;
+  if (!protected_mode() || v86_mode()) {
+    if (!lock_ud) {
+      emu88_uint32 last_byte = off + (emu88_uint32)(width - 1);
+      if (last_byte > 0xFFFF || last_byte < off) {
+        raise_exception(13, 0);
+        return false;
+      }
+    }
+    return true;
+  }
   for (int i = 0; i < 6; i++) {
     if (sregs[i] != seg) continue;
     if (!seg_cache[i].valid) {
@@ -200,7 +211,17 @@ bool emu88::check_segment_read(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 w
 }
 
 bool emu88::check_segment_write(emu88_uint16 seg, emu88_uint32 off, emu88_uint8 width) {
-  if (!protected_mode() || v86_mode() || exception_pending) return true;
+  if (exception_pending) return true;
+  if (!protected_mode() || v86_mode()) {
+    if (!lock_ud) {
+      emu88_uint32 last_byte = off + (emu88_uint32)(width - 1);
+      if (last_byte > 0xFFFF || last_byte < off) {
+        raise_exception(13, 0);
+        return false;
+      }
+    }
+    return true;
+  }
   for (int i = 0; i < 6; i++) {
     if (sregs[i] != seg) continue;
     if (!seg_cache[i].valid) {
@@ -729,7 +750,9 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
   if (count == 0) return val;
   emu88_uint8 result = val;
   emu88_uint8 cf;
+  emu88_uint8 prev;
   for (emu88_uint8 i = 0; i < count; i++) {
+    prev = result;
     switch (op) {
     case 0: // ROL
       cf = (result >> 7) & 1;
@@ -773,8 +796,8 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
       break;
     }
   }
-  if (count == 1) {
-    // OF set only for single-bit shifts
+  if (count == 1 || !lock_ud) {
+    // Single-bit: all CPUs compute OF. Multi-bit: 286 computes, 386 leaves undefined.
     switch (op) {
     case 0: case 2: case 4: case 6: // left shifts/rotates
       set_flag_val(FLAG_OF, ((result >> 7) & 1) != get_flag(FLAG_CF));
@@ -782,13 +805,21 @@ emu88_uint8 emu88::do_shift8(emu88_uint8 op, emu88_uint8 val, emu88_uint8 count)
     case 1: case 3: // right rotates
       set_flag_val(FLAG_OF, ((result >> 7) ^ ((result >> 6) & 1)) != 0);
       break;
-    case 5: case 7: // right shifts
-      set_flag_val(FLAG_OF, (op == 5) ? ((val & 0x80) != 0) : false);
+    case 5: // SHR: OF = MSB of value before last shift
+      set_flag_val(FLAG_OF, (prev >> 7) & 1);
+      break;
+    case 7: // SAR: OF always 0 (sign never changes)
+      clear_flag(FLAG_OF);
       break;
     }
   }
   if (op >= 4) {
     set_flags_zsp8(result);
+    if (!lock_ud) {
+      // 286: SHL sets AF from result bit 4; SHR/SAR always set AF
+      if (op == 4 || op == 6) set_flag_val(FLAG_AF, result & 0x10);
+      else set_flag(FLAG_AF);
+    }
   }
   return result;
 }
@@ -798,7 +829,9 @@ emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 cou
   if (count == 0) return val;
   emu88_uint16 result = val;
   emu88_uint8 cf;
+  emu88_uint16 prev;
   for (emu88_uint8 i = 0; i < count; i++) {
+    prev = result;
     switch (op) {
     case 0: // ROL
       cf = (result >> 15) & 1;
@@ -842,7 +875,7 @@ emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 cou
       break;
     }
   }
-  if (count == 1) {
+  if (count == 1 || !lock_ud) {
     switch (op) {
     case 0: case 2: case 4: case 6:
       set_flag_val(FLAG_OF, ((result >> 15) & 1) != get_flag(FLAG_CF));
@@ -850,13 +883,20 @@ emu88_uint16 emu88::do_shift16(emu88_uint8 op, emu88_uint16 val, emu88_uint8 cou
     case 1: case 3:
       set_flag_val(FLAG_OF, ((result >> 15) ^ ((result >> 14) & 1)) != 0);
       break;
-    case 5: case 7:
-      set_flag_val(FLAG_OF, (op == 5) ? ((val & 0x8000) != 0) : false);
+    case 5:
+      set_flag_val(FLAG_OF, (prev >> 15) & 1);
+      break;
+    case 7:
+      clear_flag(FLAG_OF);
       break;
     }
   }
   if (op >= 4) {
     set_flags_zsp16(result);
+    if (!lock_ud) {
+      if (op == 4 || op == 6) set_flag_val(FLAG_AF, result & 0x10);
+      else set_flag(FLAG_AF);
+    }
   }
   return result;
 }
@@ -866,7 +906,9 @@ emu88_uint32 emu88::do_shift32(emu88_uint8 op, emu88_uint32 val, emu88_uint8 cou
   if (count == 0) return val;
   emu88_uint32 result = val;
   emu88_uint8 cf;
+  emu88_uint32 prev;
   for (emu88_uint8 i = 0; i < count; i++) {
+    prev = result;
     switch (op) {
     case 0: // ROL
       cf = (result >> 31) & 1;
@@ -905,7 +947,7 @@ emu88_uint32 emu88::do_shift32(emu88_uint8 op, emu88_uint32 val, emu88_uint8 cou
       break;
     }
   }
-  if (count == 1) {
+  if (count == 1 || !lock_ud) {
     switch (op) {
     case 0: case 2: case 4: case 6:
       set_flag_val(FLAG_OF, ((result >> 31) & 1) != (emu88_uint32)get_flag(FLAG_CF));
@@ -913,13 +955,20 @@ emu88_uint32 emu88::do_shift32(emu88_uint8 op, emu88_uint32 val, emu88_uint8 cou
     case 1: case 3:
       set_flag_val(FLAG_OF, ((result >> 31) ^ ((result >> 30) & 1)) != 0);
       break;
-    case 5: case 7:
-      set_flag_val(FLAG_OF, (op == 5) ? ((val & 0x80000000u) != 0) : false);
+    case 5:
+      set_flag_val(FLAG_OF, (prev >> 31) & 1);
+      break;
+    case 7:
+      clear_flag(FLAG_OF);
       break;
     }
   }
   if (op >= 4) {
     set_flags_zsp32(result);
+    if (!lock_ud) {
+      if (op == 4 || op == 6) set_flag_val(FLAG_AF, result & 0x10);
+      else set_flag(FLAG_AF);
+    }
   }
   return result;
 }
@@ -980,6 +1029,10 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     bool of_cf = (result & 0xFF00) != 0;
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
+    if (!lock_ud) {
+      set_flags_zsp8(result & 0xFF);
+      set_flag_val(FLAG_AF, result & 0x10);
+    }
     cycles += 54;  // 70 total - 16 from base
     break;
   }
@@ -989,6 +1042,10 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     bool of_cf = (result < -128 || result > 127);
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
+    if (!lock_ud) {
+      set_flags_zsp8(emu88_uint16(result) & 0xFF);
+      set_flag_val(FLAG_AF, emu88_uint16(result) & 0x10);
+    }
     cycles += 64;  // 80 total
     break;
   }
@@ -1006,6 +1063,10 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     emu88_uint8 remainder = dividend % val;
     set_reg8(reg_AL, quotient & 0xFF);
     set_reg8(reg_AH, remainder);
+    if (!lock_ud) {
+      set_flags_zsp8(quotient & 0xFF);
+      set_flag_val(FLAG_AF, quotient & 0x10);
+    }
     cycles += 64;  // 80 total
     break;
   }
@@ -1024,6 +1085,10 @@ void emu88::execute_grp3_rm8(emu88_uint8 modrm_byte) {
     emu88_int8 remainder = dividend % divisor;
     set_reg8(reg_AL, emu88_uint8(quotient));
     set_reg8(reg_AH, emu88_uint8(remainder));
+    if (!lock_ud) {
+      set_flags_zsp8(emu88_uint8(quotient));
+      set_flag_val(FLAG_AF, emu88_uint8(quotient) & 0x10);
+    }
     cycles += 85;  // 101 total
     break;
   }
@@ -1055,6 +1120,10 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     bool of_cf = regs[reg_DX] != 0;
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
+    if (!lock_ud) {
+      set_flags_zsp16(regs[reg_AX]);
+      set_flag_val(FLAG_AF, result & 0x10);
+    }
     cycles += 105;  // 118 total approx
     break;
   }
@@ -1065,6 +1134,10 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     bool of_cf = (result < -32768 || result > 32767);
     set_flag_val(FLAG_CF, of_cf);
     set_flag_val(FLAG_OF, of_cf);
+    if (!lock_ud) {
+      set_flags_zsp16(regs[reg_AX]);
+      set_flag_val(FLAG_AF, emu88_uint32(result) & 0x10);
+    }
     cycles += 118;  // 128 total approx
     break;
   }
@@ -1082,6 +1155,10 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     emu88_uint16 remainder = dividend % val;
     regs[reg_AX] = quotient & 0xFFFF;
     regs[reg_DX] = remainder;
+    if (!lock_ud) {
+      set_flags_zsp16(regs[reg_AX]);
+      set_flag_val(FLAG_AF, quotient & 0x10);
+    }
     cycles += 130;  // 144 total approx
     break;
   }
@@ -1100,6 +1177,10 @@ void emu88::execute_grp3_rm16(emu88_uint8 modrm_byte) {
     emu88_int16 remainder = dividend % divisor;
     regs[reg_AX] = emu88_uint16(quotient);
     regs[reg_DX] = emu88_uint16(remainder);
+    if (!lock_ud) {
+      set_flags_zsp16(regs[reg_AX]);
+      set_flag_val(FLAG_AF, emu88_uint16(quotient) & 0x10);
+    }
     cycles += 150;  // 165 total approx
     break;
   }
@@ -1631,8 +1712,8 @@ void emu88::execute(void) {
       lock_valid = true; // Will validate on actual 0F opcode if needed
       break;
     }
-    if (!lock_valid) {
-      raise_exception_no_error(6);  // #UD
+    if (!lock_valid && lock_ud) {
+      raise_exception_no_error(6);  // #UD (386+ only)
       return;
     }
   }
@@ -1762,6 +1843,7 @@ void emu88::execute(void) {
     }
     set_reg8(reg_AL, al);
     set_flags_zsp8(al);
+    if (!lock_ud) set_flag_val(FLAG_OF, ((old_al ^ al) & 0x80) != 0);
     break;
   }
 
@@ -1784,6 +1866,7 @@ void emu88::execute(void) {
     }
     set_reg8(reg_AL, al);
     set_flags_zsp8(al);
+    if (!lock_ud) set_flag_val(FLAG_OF, ((old_al ^ al) & 0x80) != 0);
     break;
   }
 
@@ -1791,14 +1874,20 @@ void emu88::execute(void) {
   case 0x37: {
     emu88_uint8 al = get_reg8(reg_AL);
     if ((al & 0x0F) > 9 || get_flag(FLAG_AF)) {
-      set_reg8(reg_AL, (al + 6) & 0x0F);
+      emu88_uint8 al_adj = al + 6;
+      set_reg8(reg_AL, al_adj & 0x0F);
       set_reg8(reg_AH, get_reg8(reg_AH) + 1);
       set_flag(FLAG_AF);
       set_flag(FLAG_CF);
+      if (!lock_ud) {
+        set_flags_zsp8(al_adj);
+        set_flag_val(FLAG_OF, ((al ^ al_adj) & 0x80) != 0);
+      }
     } else {
       set_reg8(reg_AL, al & 0x0F);
       clear_flag(FLAG_AF);
       clear_flag(FLAG_CF);
+      if (!lock_ud) { set_flags_zsp8(al); clear_flag(FLAG_OF); }
     }
     break;
   }
@@ -1807,14 +1896,20 @@ void emu88::execute(void) {
   case 0x3F: {
     emu88_uint8 al = get_reg8(reg_AL);
     if ((al & 0x0F) > 9 || get_flag(FLAG_AF)) {
-      set_reg8(reg_AL, (al - 6) & 0x0F);
+      emu88_uint8 al_adj = al - 6;
+      set_reg8(reg_AL, al_adj & 0x0F);
       set_reg8(reg_AH, get_reg8(reg_AH) - 1);
       set_flag(FLAG_AF);
       set_flag(FLAG_CF);
+      if (!lock_ud) {
+        set_flags_zsp8(al_adj);
+        set_flag_val(FLAG_OF, ((al ^ al_adj) & 0x80) != 0);
+      }
     } else {
       set_reg8(reg_AL, al & 0x0F);
       clear_flag(FLAG_AF);
       clear_flag(FLAG_CF);
+      if (!lock_ud) { set_flags_zsp8(al); clear_flag(FLAG_OF); }
     }
     break;
   }
@@ -2675,6 +2770,11 @@ void emu88::execute(void) {
     set_reg8(reg_AH, al / base);
     set_reg8(reg_AL, al % base);
     set_flags_zsp8(get_reg8(reg_AL));
+    if (!lock_ud) {
+      clear_flag(FLAG_CF);
+      clear_flag(FLAG_OF);
+      clear_flag(FLAG_AF);
+    }
     break;
   }
 
@@ -2683,9 +2783,16 @@ void emu88::execute(void) {
     emu88_uint8 base = fetch_ip_byte();  // usually 0x0A
     emu88_uint8 al = get_reg8(reg_AL);
     emu88_uint8 ah = get_reg8(reg_AH);
-    set_reg8(reg_AL, (ah * base + al) & 0xFF);
+    emu88_uint8 product = (ah * base) & 0xFF;
+    emu88_uint8 result = (product + al) & 0xFF;
+    set_reg8(reg_AL, result);
     set_reg8(reg_AH, 0);
-    set_flags_zsp8(get_reg8(reg_AL));
+    if (!lock_ud) {
+      set_flags_add8(product, al, 0);
+      set_flag_val(FLAG_CF, (emu88_uint16(product) + al) > 0xFF);
+    } else {
+      set_flags_zsp8(result);
+    }
     break;
   }
 
@@ -3090,6 +3197,10 @@ void emu88::execute(void) {
       set_reg32(mr.reg_field, (emu88_uint32)result);
       set_flag_val(FLAG_CF, result != (emu88_int32)result);
       set_flag_val(FLAG_OF, result != (emu88_int32)result);
+      if (!lock_ud) {
+        set_flags_zsp32((emu88_uint32)result);
+        set_flag_val(FLAG_AF, (emu88_uint32)result & 0x10);
+      }
     } else {
       emu88_int16 src = (emu88_int16)get_rm16(mr);
       emu88_int16 imm = (emu88_int16)fetch_ip_word();
@@ -3097,6 +3208,10 @@ void emu88::execute(void) {
       regs[mr.reg_field] = (emu88_uint16)result;
       set_flag_val(FLAG_CF, result != (emu88_int16)result);
       set_flag_val(FLAG_OF, result != (emu88_int16)result);
+      if (!lock_ud) {
+        set_flags_zsp16((emu88_uint16)result);
+        set_flag_val(FLAG_AF, (emu88_uint32)result & 0x10);
+      }
     }
     break;
   }
@@ -3120,12 +3235,20 @@ void emu88::execute(void) {
       set_reg32(mr.reg_field, (emu88_uint32)result);
       set_flag_val(FLAG_CF, result != (emu88_int32)result);
       set_flag_val(FLAG_OF, result != (emu88_int32)result);
+      if (!lock_ud) {
+        set_flags_zsp32((emu88_uint32)result);
+        set_flag_val(FLAG_AF, (emu88_uint32)result & 0x10);
+      }
     } else {
       emu88_int16 src = (emu88_int16)get_rm16(mr);
       emu88_int32 result = (emu88_int32)src * (emu88_int32)imm;
       regs[mr.reg_field] = (emu88_uint16)result;
       set_flag_val(FLAG_CF, result != (emu88_int16)result);
       set_flag_val(FLAG_OF, result != (emu88_int16)result);
+      if (!lock_ud) {
+        set_flags_zsp16((emu88_uint16)result);
+        set_flag_val(FLAG_AF, (emu88_uint32)result & 0x10);
+      }
     }
     break;
   }
