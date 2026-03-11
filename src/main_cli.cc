@@ -560,6 +560,8 @@ static void usage(const char *prog) {
 }
 
 int main(int argc, char *argv[]) {
+  setbuf(stderr, NULL);  // unbuffered stderr for trace output
+  fprintf(stderr, "[TEST] stderr output works\n");
   dos_io_cli io;
 
   const char *floppy_a = nullptr;
@@ -681,9 +683,10 @@ int main(int argc, char *argv[]) {
     machine.ip = 0x7C00;
     machine.sregs[emu88::seg_CS] = 0;
   } else {
-    if (!machine.boot(boot_drive)) return 1;
+    if (!machine.boot(boot_drive)) { fprintf(stderr, "[BOOT] boot() failed\n"); return 1; }
   }
 
+  fprintf(stderr, "[BOOT] boot() succeeded, entering main loop\n");
   enable_raw_mode();
 
   // Throttling state

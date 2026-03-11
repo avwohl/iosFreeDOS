@@ -120,6 +120,119 @@ public:
   // Configure display adapter (must be called before boot)
   void set_display(DisplayAdapter adapter) { config.display = adapter; }
 
+  // DPMI intercept (override from emu88)
+  bool intercept_pm_int(emu88_uint8 vector, bool is_software_int,
+                        bool has_error_code, emu88_uint32 error_code) override;
+
+  // DPMI state
+  struct DpmiState {
+    bool active = false;
+    bool is_32bit = false;
+
+    // Physical addresses of DPMI structures
+    uint32_t base = 0;
+    uint32_t gdt_phys = 0;
+    uint32_t idt_phys = 0;
+    uint32_t ldt_phys = 0;
+    uint32_t tss_phys = 0;
+    uint32_t pm_stack_top = 0;
+
+    // GDT selectors
+    uint16_t ring0_cs = 0x10;
+    uint16_t ring0_ds = 0x08;
+    uint16_t tss_sel = 0x18;
+    uint16_t ldt_gdt_sel = 0x20;
+    uint16_t pm_stack_ss = 0x30;  // PM stack SS (base=dpmi.base)
+
+    // LDT allocation (up to 2048 entries)
+    static constexpr int LDT_MAX = 2048;
+    uint8_t ldt_alloc[LDT_MAX / 8] = {};
+
+    // Client initial selectors
+    uint16_t client_psp = 0;
+
+    // Saved real-mode state
+    uint16_t saved_rm_ss = 0, saved_rm_sp = 0;
+
+    // Real-mode interrupt vectors (snapshot)
+    uint16_t rm_int_off[256] = {};
+    uint16_t rm_int_seg[256] = {};
+
+    // PM interrupt vectors (client handlers installed via 0205h)
+    struct PMVec { uint16_t sel = 0; uint32_t off = 0; };
+    PMVec pm_int[256] = {};
+    bool pm_int_installed[256] = {};
+
+    // Exception handlers (installed via 0203h)
+    PMVec exc_handler[32] = {};
+    bool exc_installed[32] = {};
+
+    // Memory block allocation
+    struct MemBlock {
+      uint32_t handle = 0;
+      uint32_t base = 0;
+      uint32_t size = 0;
+      bool allocated = false;
+    };
+    static constexpr int MAX_MEM_BLOCKS = 128;
+    MemBlock mem_blocks[MAX_MEM_BLOCKS] = {};
+    uint32_t next_mem_base = 0;
+    uint32_t next_handle = 1;
+
+    // DOS memory blocks
+    struct DosBlock {
+      uint16_t segment = 0;
+      uint16_t paragraphs = 0;
+      uint16_t selector = 0;
+      bool allocated = false;
+    };
+    static constexpr int MAX_DOS_BLOCKS = 32;
+    DosBlock dos_blocks[MAX_DOS_BLOCKS] = {};
+
+    // Segment-to-descriptor cache (for 0002h)
+    struct SegMap { uint16_t rm_seg = 0; uint16_t pm_sel = 0; bool valid = false; };
+    static constexpr int MAX_SEG_MAP = 64;
+    SegMap seg_map[MAX_SEG_MAP] = {};
+
+    // Virtual interrupt flag
+    bool vif = true;
+
+    // GDT selectors
+    uint16_t bios_rom_cs = 0;   // BIOS ROM code segment (base=0xF0000)
+
+    // ROM entry points
+    uint16_t mode_switch_off = 0;
+    uint16_t rm_return_off = 0;
+    uint16_t raw_pm_to_rm_off = 0;
+    uint16_t exc_return_off = 0;
+
+    // Nested call state
+    bool in_rm_callback = false;
+    bool exc_handler_done = false;
+
+    // Dedicated RM reflection stacks (DPMI spec: host provides locked RM stacks)
+    // Each stack is 512 bytes. We support up to 8 nesting levels.
+    static constexpr int RM_REFLECT_STACK_COUNT = 8;
+    static constexpr int RM_REFLECT_STACK_SIZE = 0x200;  // 512 bytes each
+    // Physical base: 0x7000 (free after boot, below boot sector at 0x7C00)
+    static constexpr uint32_t RM_REFLECT_STACK_BASE = 0x7000;
+    int rm_reflect_stack_depth = 0;
+
+    // Low-memory save/restore for RM execution
+    // PM code (like DOS4GW) may overwrite the IVT/BDA at physical 0x0000-0x1FFF.
+    // We save PM's data and restore the real IVT/BDA for each RM call.
+    static constexpr uint32_t LOW_MEM_SAVE_SIZE = 0x2000;  // 8KB: IVT+BDA+DOS data (DOS4GW overwrites this range)
+    uint8_t original_low_mem[LOW_MEM_SAVE_SIZE] = {};  // Snapshot at DPMI init
+    uint8_t pm_low_mem[LOW_MEM_SAVE_SIZE] = {};         // PM's overwritten data
+    bool pm_overwrote_low_mem = false;
+
+    // Exception handler RETF restoration state
+    uint32_t exc_frame_base = 0;
+    uint16_t exc_save_ds = 0, exc_save_es = 0, exc_save_fs = 0, exc_save_gs = 0;
+    emu88::SegDescCache exc_save_seg_cache[6] = {};
+  };
+  DpmiState dpmi;
+
 private:
   dos_io *io;
 
@@ -148,9 +261,37 @@ private:
   uint16_t pit_current_count(int ch) const;
   uint8_t port_b;  // Port 0x61
 
+  // Adlib/OPL2 (minimal detection emulation)
+  uint8_t adlib_index;       // Index register (port 0x388 write)
+  uint8_t adlib_regs[256];   // OPL registers
+  uint8_t adlib_status;      // Status register (port 0x388 read)
+  bool adlib_timer1_running;
+  uint64_t adlib_timer1_start_cycle;
+
+  // Sound Blaster DSP (minimal detection emulation, base 0x220)
+  static const uint16_t sb_base = 0x220;
+  uint8_t sb_dsp_data[16];   // Read data FIFO
+  int sb_dsp_data_head;
+  int sb_dsp_data_tail;
+  int sb_dsp_data_count;
+  uint8_t sb_dsp_cmd;        // Current command being processed
+  bool sb_dsp_cmd_pending;   // Waiting for command parameter
+  bool sb_dsp_reset_active;  // DSP is being reset
+
   // CGA/MDA CRTC state
   uint8_t crtc_index;
   uint8_t crtc_regs[256];
+
+  // VGA sequencer state (port 0x3C4/0x3C5)
+  uint8_t vga_seq_index;
+  uint8_t vga_seq_regs[8];
+
+  // VGA graphics controller state (port 0x3CE/0x3CF)
+  uint8_t vga_gc_index;
+  uint8_t vga_gc_regs[16];
+
+  // Mode X composite buffer (320x200 = 64000 bytes)
+  uint8_t modex_composite[64000];
 
   // VGA DAC palette (256 colors, RGB 0-63 each)
   uint8_t vga_dac[256][3];
@@ -195,6 +336,18 @@ private:
   // Keyboard controller command state (for A20 gate)
   uint8_t kbd_cmd_pending;
 
+  // Hardware keyboard scancode buffer (for INT 9 / port 0x60)
+  static constexpr int KBD_HW_BUF_SIZE = 16;
+  uint8_t kbd_hw_buf[KBD_HW_BUF_SIZE];
+  int kbd_hw_head = 0;
+  int kbd_hw_tail = 0;
+  uint8_t kbd_last_scancode = 0;  // Last scancode read from port 0x60
+
+  // CMOS RTC
+  uint8_t cmos_index;
+  uint8_t cmos_data[128];
+  void init_cmos();
+
   // NE2000 NIC
   ne2000 *nic;
   uint16_t ne2000_base;
@@ -236,6 +389,7 @@ private:
 
   // BIOS ROM entry points (offset within F000 segment)
   uint16_t bios_entry[256];
+  uint16_t pm_int_default_entry[256];  // PM default INT handler stubs (RETF)
 
   // BDA helpers
   void bda_w8(int off, uint8_t v);
@@ -284,6 +438,30 @@ private:
   void init_ivt();
   void init_bda();
   void install_bios_stubs();
+
+  // DPMI implementation (in dos_dpmi.cc)
+  void dpmi_mode_switch();
+  void dpmi_raw_rm_to_pm();
+  void dpmi_raw_pm_to_rm();
+  void dpmi_int31h();
+  void dpmi_reflect_to_rm(uint8_t vector, bool preserve_regs = false);
+  void dpmi_terminate(uint8_t exit_code);
+  void dpmi_dispatch_exception(uint8_t vector, uint32_t error_code, bool has_error_code);
+  void dpmi_exec_rm(uint8_t vector, uint32_t struct_addr, uint16_t copy_words, bool use_iret);
+  void dpmi_save_pm_low_mem();
+  void dpmi_restore_pm_low_mem();
+
+  // DPMI helpers
+  uint16_t dpmi_alloc_ldt_sel();
+  void dpmi_free_ldt_sel(uint16_t sel);
+  void dpmi_write_gdt_entry(int index, uint32_t base, uint32_t limit,
+                            uint8_t access, uint8_t flags_nibble);
+  void dpmi_write_ldt_entry(uint16_t sel, uint32_t base, uint32_t limit,
+                            uint8_t access, uint8_t flags_nibble);
+  void dpmi_read_ldt_raw(uint16_t sel, uint8_t desc[8]);
+  void dpmi_write_ldt_raw(uint16_t sel, const uint8_t desc[8]);
+  void dpmi_write_idt_entry(int vector, uint16_t sel, uint32_t offset,
+                            uint8_t dpl, bool is_32bit);
 };
 
 #endif // DOS_MACHINE_H

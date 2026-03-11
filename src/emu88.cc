@@ -73,6 +73,12 @@ void emu88::reset(void) {
   in_exception = false;
   in_double_fault = false;
   exception_pending = false;
+  dpmi_exc_dispatched = false;
+  exc_dispatch_trace = false;
+  unreal_mode = false;
+  gp_trace_count = 0;
+  rm_trace_count = 0;
+  dpmi_trace_func = 0;
   cycles = 0;
   op_size_32 = false;
   addr_size_32 = false;
@@ -83,6 +89,7 @@ void emu88::reset(void) {
   cr0 = 0; cr2 = 0; cr3 = 0; cr4 = 0;
   memset(dr, 0, sizeof(dr));
   ldtr = 0; tr = 0; cpl = 0;
+  fpu_init();
   memset(&ldtr_cache, 0, sizeof(ldtr_cache));
   memset(&tr_cache, 0, sizeof(tr_cache));
   init_seg_caches();
@@ -1907,9 +1914,240 @@ void emu88::execute(void) {
   op_size_32 = default_32;
   addr_size_32 = default_32;
 
+  // IVT[21h] write trap: log CS:IP of the instruction that modified IVT[21h]
+  if (mem->ivt21_trap) {
+    mem->ivt21_trap = false;
+    uint32_t code_base = seg_cache[seg_CS].base;
+    fprintf(stderr, "[IVT21-TRAP] Next insn at %04X:%08X (PM=%d) DS=%04X(base=%08X) ES=%04X(base=%08X)\n",
+            sregs[seg_CS], ip, (cr0 & CR0_PE) ? 1 : 0,
+            sregs[seg_DS], seg_cache[seg_DS].base,
+            sregs[seg_ES], seg_cache[seg_ES].base);
+    fprintf(stderr, "  Code bytes around (prev insn -> current): ");
+    for (int i = -16; i < 8; i++) {
+      if (i == 0) fprintf(stderr, "| ");
+      fprintf(stderr, "%02X ", mem->fetch_mem(code_base + ip + i));
+    }
+    fprintf(stderr, "\n  EDI=%08X ESI=%08X ECX=%08X EAX=%08X\n",
+            get_reg32(reg_DI), get_reg32(reg_SI), get_reg32(reg_CX), get_reg32(reg_AX));
+  }
+
   // Save instruction start IP for fault-type exceptions (before prefixes)
   insn_ip = ip;
   exception_pending = false;
+  dpmi_exc_dispatched = false;
+
+  // TEMP: trace movedata caller to find source of invalid selector 0x534F
+  if ((cr0 & CR0_PE) && sregs[seg_CS] == 0x002C) {
+    uint32_t eip = ip;
+    // First movedata call: MOV [ESP], EAX at 035086 (sets selector arg)
+    if (eip == 0x035086) {
+      fprintf(stderr, "[MOVEDATA-TRACE] 1st call: src_sel EAX=0x%08X EDX=0x%08X [EDX+26]_addr=0x%08X\n",
+              get_reg32(reg_AX), get_reg32(reg_DX),
+              seg_cache[seg_DS].base + get_reg32(reg_DX) + 0x26);
+    }
+    // After first movedata returns, check local var at [EBP-1A]
+    if (eip == 0x03508E) {
+      uint32_t ebp = get_reg32(reg_BP);
+      uint32_t local_addr = seg_cache[seg_DS].base + ebp - 0x1A;
+      uint16_t val = mem->fetch_mem16(local_addr);
+      fprintf(stderr, "[MOVEDATA-TRACE] After 1st call: [EBP-1A] = 0x%04X (phys=0x%08X) EBP=0x%08X\n",
+              val, local_addr, ebp);
+    }
+    // Second movedata setup: MOVSX EAX, [EBP-1A] at 0350B0
+    if (eip == 0x0350B0) {
+      uint32_t ebp = get_reg32(reg_BP);
+      uint32_t local_addr = seg_cache[seg_DS].base + ebp - 0x1A;
+      uint16_t val = mem->fetch_mem16(local_addr);
+      fprintf(stderr, "[MOVEDATA-TRACE] 2nd call src_sel: [EBP-1A] = 0x%04X (will be used as selector!)\n", val);
+    }
+  }
+
+  // Debug: trace ESP after DPMI exception dispatch
+  if (exc_dispatch_trace) {
+    exc_dispatch_trace = false;
+    fprintf(stderr, "[EXC-TRACE] First insn after dispatch: %04X:%08X SP=%04X ESP=%08X SS=%04X SS.base=%08X SS.B=%d\n",
+            sregs[seg_CS], ip, regs[reg_SP], get_esp(), sregs[seg_SS],
+            seg_cache[seg_SS].base, (seg_cache[seg_SS].flags >> 2) & 1);
+  }
+
+  // Debug: trace DOS4GW handler stubs AND common handler
+  if (sregs[seg_CS] == 0x000C && ((ip >= 0x6AB7 && ip <= 0x6B2B) || (ip >= 0x6D00 && ip <= 0x6D70))) {
+    static int handler_trace = 0;
+    if (handler_trace < 300) {
+      handler_trace++;
+      uint32_t lin = seg_cache[seg_CS].base + ip;
+      fprintf(stderr, "[HTR] %04X:%04X SP=%04X ESP=%08X SS=%04X op:", sregs[seg_CS], (uint16_t)ip, regs[reg_SP], get_esp(), sregs[seg_SS]);
+      for (int i = 0; i < 6; i++) fprintf(stderr, " %02X", mem->fetch_mem(lin + i));
+      fprintf(stderr, "\n");
+    }
+  }
+
+  // Debug: detect CPL != CS.RPL (should never happen on real x86)
+  if (protected_mode() && !v86_mode() && cpl != (sregs[seg_CS] & 3)) {
+    static int cpl_desync = 0;
+    if (cpl_desync < 5) {
+      cpl_desync++;
+      fprintf(stderr, "[CPL-DESYNC] cpl=%d CS=%04X(RPL=%d) at %04X:%08X\n",
+              cpl, sregs[seg_CS], sregs[seg_CS] & 3, sregs[seg_CS], ip);
+    }
+  }
+
+  // INT 2Fh AX=1687h post-return trace: log registers after DPMI detection handler returns
+  if (int2f_1687_trace_pending && sregs[seg_CS] == int2f_trace_ret_cs && ip == int2f_trace_ret_ip) {
+    int2f_1687_trace_pending = false;
+    fprintf(stderr, "[DPMI-DETECT-RET] INT 2Fh AX=1687h handler returned:\n");
+    fprintf(stderr, "[DPMI-DETECT-RET]   AX=%04X BX=%04X CX=%04X DX=%04X SI=%04X DI=%04X\n",
+            regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
+            regs[reg_SI], regs[reg_DI]);
+    fprintf(stderr, "[DPMI-DETECT-RET]   ES=%04X DS=%04X SS=%04X CS=%04X IP=%04X\n",
+            sregs[seg_ES], sregs[seg_DS], sregs[seg_SS], sregs[seg_CS], ip);
+    fprintf(stderr, "[DPMI-DETECT-RET]   AX=0 means DPMI available; ES:DI = DPMI entry point\n");
+    fprintf(stderr, "[DPMI-DETECT-RET]   DPMI entry = %04X:%04X, version=%d.%d, flags=%04X\n",
+            sregs[seg_ES], regs[reg_DI],
+            regs[reg_DX] >> 8, regs[reg_DX] & 0xFF,
+            regs[reg_BX]);
+    fprintf(stderr, "[DPMI-DETECT-RET]   Processor type=%02X, PM switch buf size=%04X paras\n",
+            regs[reg_CX] & 0xFF, regs[reg_SI]);
+  }
+
+  // DPMI post-call trace: check if we've returned from a traced INT 31h call
+  if (dpmi_trace_func && sregs[seg_CS] == dpmi_trace_ret_cs && ip == dpmi_trace_ret_eip) {
+    uint16_t traced_func = dpmi_trace_func;
+    dpmi_trace_func = 0;  // clear before logging
+    bool cf = (flags & FLAG_CF) != 0;
+    if (traced_func == 0x0302) {
+      fprintf(stderr, "[DPMI-RET] 0302h (file read) returned, CF=%d\n", cf);
+      // Dump read buffer and data segment state
+      if (sregs[seg_DS] == 0x00A7) {
+        uint32_t b = seg_cache[seg_DS].base;
+        fprintf(stderr, "[POST-READ] [002E]=%02X [0098]=%08X [009C]=%08X\n",
+                mem->fetch_mem(b + 0x2E),
+                mem->fetch_mem32(b + 0x98), mem->fetch_mem32(b + 0x9C));
+        fprintf(stderr, "[POST-READ] Buf[1394..13D3]:");
+        for (int i = 0; i < 64; i++) {
+          if (i % 16 == 0) fprintf(stderr, "\n  +%04X:", 0x1394 + i);
+          fprintf(stderr, " %02X", mem->fetch_mem(b + 0x1394 + i));
+        }
+        fprintf(stderr, "\n");
+      }
+      // Trace post-read code execution (disabled for now)
+      // gp_trace_count = 2000;
+    } else if (traced_func == 0x0501) {
+      fprintf(stderr, "[DPMI-RET] 0501h: CF=%d BX:CX=%04X:%04X (linear=%08X) SI:DI=%04X:%04X\n",
+              cf, regs[reg_BX], regs[reg_CX],
+              ((uint32_t)regs[reg_BX] << 16) | regs[reg_CX],
+              regs[reg_SI], regs[reg_DI]);
+      // Dump DS=00A7 data segment state at 0501h return
+      if (sregs[seg_DS] == 0x00A7) {
+        uint32_t b = seg_cache[seg_DS].base;
+        fprintf(stderr, "[0501-STATE] base=%08X [002E]=%02X [002F]=%02X\n",
+                b, mem->fetch_mem(b + 0x2E), mem->fetch_mem(b + 0x2F));
+        fprintf(stderr, "[0501-STATE] [0098]=%08X [009C]=%08X\n",
+                mem->fetch_mem32(b + 0x98), mem->fetch_mem32(b + 0x9C));
+        fprintf(stderr, "[0501-STATE] Read buf [1394..13A3]:");
+        for (int i = 0; i < 16; i++)
+          fprintf(stderr, " %02X", mem->fetch_mem(b + 0x1394 + i));
+        fprintf(stderr, "\n");
+      }
+      // Trace disabled for now
+      // gp_trace_count = 5000;
+    } else if (traced_func == 0x0500) {
+      fprintf(stderr, "[DPMI-RET] 0500h: CF=%d  Free memory info buffer:\n", cf);
+      uint32_t buf = dpmi_trace_es_base + dpmi_trace_edi;
+      for (int i = 0; i < 48; i += 4) {
+        uint32_t val = read_linear32(buf + i);
+        fprintf(stderr, "  [%02X] = %08X", i, val);
+        if (i == 0x00) fprintf(stderr, " (largest free block bytes)");
+        if (i == 0x04) fprintf(stderr, " (max unlocked pages)");
+        if (i == 0x08) fprintf(stderr, " (max locked pages)");
+        if (i == 0x0C) fprintf(stderr, " (linear addr space pages)");
+        if (i == 0x10) fprintf(stderr, " (total unlocked pages)");
+        if (i == 0x14) fprintf(stderr, " (total free pages)");
+        if (i == 0x18) fprintf(stderr, " (total physical pages)");
+        if (i == 0x1C) fprintf(stderr, " (free linear addr pages)");
+        if (i == 0x20) fprintf(stderr, " (paging file pages)");
+        fprintf(stderr, "\n");
+      }
+    }
+  }
+
+  // Breakpoints for [002E] write code paths in selector 0087
+  if (cpl == 3 && sregs[seg_CS] == 0x0087) {
+    uint32_t eip = ip;
+    if (eip == 0x4512 || eip == 0x4553 || eip == 0x650B || eip == 0x774C) {
+      fprintf(stderr, "[BRKPT] Hit 0087:%04X! EAX=%08X ESI=%08X DS=%04X ESP=%08X\n",
+              eip, get_reg32(reg_AX), get_reg32(reg_SI), sregs[seg_DS], get_esp());
+    }
+    // Trace the function entry at 0087:44E4 (mode init caller) and 0087:6500 (area near write)
+    if (eip >= 0x44E0 && eip <= 0x4560) {
+      static int mode_trace = 0;
+      if (mode_trace < 100) {
+        mode_trace++;
+        fprintf(stderr, "[MODE-TRACE] 0087:%04X EAX=%08X ESI=%08X DS=%04X\n",
+                eip, get_reg32(reg_AX), get_reg32(reg_SI), sregs[seg_DS]);
+      }
+    }
+  }
+
+  // Real-mode instruction trace (for DOOM.EXE initialization debugging)
+  if (rm_trace_count > 0 && !protected_mode()) {
+    rm_trace_count--;
+    uint32_t lin = ((uint32_t)sregs[seg_CS] << 4) + ip;
+    fprintf(stderr, "[RM-INSN] %04X:%04X (lin=%05X): ",
+            sregs[seg_CS], ip, lin);
+    for (int i = 0; i < 8; i++)
+      fprintf(stderr, "%02X ", mem->fetch_mem(lin + i));
+    fprintf(stderr, " AX=%04X BX=%04X CX=%04X DX=%04X DS=%04X ES=%04X\n",
+            regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
+            sregs[seg_DS], sregs[seg_ES]);
+  }
+
+  // GP handler instruction trace — only trace CPL=3 (user code), skip CPL=0 (CWSDPMI kernel)
+  if (gp_trace_count > 0 && cpl == 3) {
+    gp_trace_count--;
+    uint32_t lin = protected_mode() ? (seg_cache[seg_CS].base + ip)
+                                     : ((uint32_t)sregs[seg_CS] << 4) + ip;
+    uint32_t phys = lin;
+    if (paging_enabled()) {
+      uint32_t pde_i = (lin >> 22) & 0x3FF;
+      uint32_t pte_i = (lin >> 12) & 0x3FF;
+      uint32_t pde = mem->fetch_mem32((cr3 & 0xFFFFF000) + pde_i * 4);
+      if (pde & 1) {
+        uint32_t pte = mem->fetch_mem32((pde & 0xFFFFF000) + pte_i * 4);
+        if (pte & 1) phys = (pte & 0xFFFFF000) | (lin & 0xFFF);
+      }
+    }
+    fprintf(stderr, "[INSN] %04X:%08X (lin=%08X) CPL=%d: ",
+            sregs[seg_CS], ip, lin, cpl);
+    for (int i = 0; i < 8; i++)
+      fprintf(stderr, "%02X ", mem->fetch_mem(phys + i));
+    fprintf(stderr, " ESP=%08X EAX=%08X DS=%04X\n", get_esp(), get_reg32(reg_AX), sregs[seg_DS]);
+  }
+
+  // Targeted trace: DOS4GW code around crash area (CS=000C, 7500-75B0)
+  if (sregs[seg_CS] == 0x000C && ip >= 0x7540 && ip <= 0x75B0) {
+    static int d4gw_trace = 0;
+    // Always log the RETF at 75A0 and 10 instructions before it
+    bool force_log = (ip == 0x75A0);
+    if (d4gw_trace < 200 || force_log) {
+      if (!force_log) d4gw_trace++;
+      uint32_t lin = seg_cache[seg_CS].base + ip;
+      uint32_t ss_base = seg_cache[seg_SS].base;
+      uint32_t esp = get_esp();
+      fprintf(stderr, "[D4GW] %04X:%04X ESP=%08X SS=%04X(base=%08X) AX=%04X BX=%04X CX=%04X DX=%04X SI=%04X DI=%04X",
+              sregs[seg_CS], ip, esp, sregs[seg_SS], ss_base,
+              regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
+              regs[reg_SI], regs[reg_DI]);
+      fprintf(stderr, " bytes:");
+      for (int i = 0; i < 8; i++)
+        fprintf(stderr, " %02X", mem->fetch_mem(lin + i));
+      fprintf(stderr, " [SS:SP]=%04X %04X %04X %04X\n",
+              mem->fetch_mem16(ss_base + (esp & 0xFFFF)),
+              mem->fetch_mem16(ss_base + ((esp + 2) & 0xFFFF)),
+              mem->fetch_mem16(ss_base + ((esp + 4) & 0xFFFF)),
+              mem->fetch_mem16(ss_base + ((esp + 6) & 0xFFFF)));
+    }
+  }
 
   // Handle prefix bytes
   bool lock_prefix = false;
@@ -2671,7 +2909,13 @@ void emu88::execute(void) {
         if (cpl > get_iopl()) mask &= ~(emu88_uint16)FLAG_IF;
         flags = ((flags & ~mask) | (new_flags & mask)) | 0x0002;
       } else {
+        uint8_t old_iopl = (flags >> 12) & 3;
         flags = (new_flags & 0x7FD7) | 0x0002;
+        uint8_t new_iopl = (flags >> 12) & 3;
+        if (new_iopl != old_iopl) {
+          static int pf_log = 0;
+          if (pf_log < 2) { pf_log++; fprintf(stderr, "[IOPL-POPF] %d→%d at %04X:%08X\n", old_iopl, new_iopl, sregs[seg_CS], insn_ip); }
+        }
       }
     }
     break;
@@ -2881,6 +3125,8 @@ void emu88::execute(void) {
 
   //--- RETF imm16 ---
   case 0xCA: {
+    // Save ESP for fault rollback (x86 RETF is restartable)
+    uint32_t saved_esp_retf = get_esp();
     emu88_uint16 pop_count = fetch_ip_word();
     if (op_size_32) {
       emu88_uint32 new_eip = pop_dword();
@@ -2889,21 +3135,27 @@ void emu88::execute(void) {
       if (exception_pending) break;
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
-        // Inter-privilege return: pop ESP and SS
+        // Inter-privilege return: skip pop_count bytes, then pop ESP and SS
         if (stack_32()) set_esp(get_esp() + pop_count);
         else regs[reg_SP] += pop_count;
         emu88_uint32 new_esp = pop_dword();
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_CS, new_cs, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_SS, new_ss, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; set_esp(saved_esp_retf); } break; }
         cpl = ret_cpl;
-        load_segment(seg_CS, new_cs);
         ip = new_eip;
-        load_segment(seg_SS, new_ss);
         set_esp(new_esp + pop_count);
         invalidate_segments_for_cpl();
       } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        set_esp(saved_esp_retf);
         raise_exception(13, new_cs & 0xFFFC);
       } else {
         load_segment(seg_CS, new_cs);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         ip = new_eip;
         if (stack_32()) set_esp(get_esp() + pop_count);
         else regs[reg_SP] += pop_count;
@@ -2918,17 +3170,23 @@ void emu88::execute(void) {
         if (stack_32()) set_esp(get_esp() + pop_count);
         else regs[reg_SP] += pop_count;
         emu88_uint16 new_sp = pop_word();
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         emu88_uint16 new_ss = pop_word();
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_CS, new_cs, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_SS, new_ss, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; set_esp(saved_esp_retf); } break; }
         cpl = ret_cpl;
-        load_segment(seg_CS, new_cs);
         ip = new_ip;
-        load_segment(seg_SS, new_ss);
         regs[reg_SP] = new_sp + pop_count;
         invalidate_segments_for_cpl();
       } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        set_esp(saved_esp_retf);
         raise_exception(13, new_cs & 0xFFFC);
       } else {
         load_segment(seg_CS, new_cs);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         ip = new_ip;
         if (stack_32()) set_esp(get_esp() + pop_count);
         else regs[reg_SP] += pop_count;
@@ -2938,7 +3196,19 @@ void emu88::execute(void) {
   }
 
   //--- RETF ---
-  case 0xCB:
+  case 0xCB: {
+    // Save ESP for fault rollback (x86 RETF is restartable)
+    uint32_t saved_esp_retf = get_esp();
+    // Debug: trace RETF at the DOS4GW common handler exit
+    if (insn_ip == 0x6B2B && sregs[seg_CS] == 0x000C) {
+      static int retf_trace = 0;
+      if (retf_trace < 3) {
+        retf_trace++;
+        fprintf(stderr, "[RETF-TRACE] at 000C:6B2B op32=%d stack32=%d SP=%04X ESP=%08X SS=%04X SS_base=%08X\n",
+                op_size_32, stack_32(), regs[reg_SP], get_esp(), sregs[seg_SS],
+                seg_cache[seg_SS].base);
+      }
+    }
     if (op_size_32) {
       emu88_uint32 new_eip = pop_dword();
       if (exception_pending) break;
@@ -2947,17 +3217,26 @@ void emu88::execute(void) {
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
         emu88_uint32 new_esp = pop_dword();
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        // Use cpl_override=ret_cpl so privilege checks use the target ring
+        // CPL is NOT changed until all checks pass (fault = no state change)
+        load_segment(seg_CS, new_cs, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_SS, new_ss, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; set_esp(saved_esp_retf); } break; }
+        // All checks passed — commit privilege change
         cpl = ret_cpl;
-        load_segment(seg_CS, new_cs);
         ip = new_eip;
-        load_segment(seg_SS, new_ss);
         set_esp(new_esp);
         invalidate_segments_for_cpl();
       } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        set_esp(saved_esp_retf);
         raise_exception(13, new_cs & 0xFFFC);
       } else {
         load_segment(seg_CS, new_cs);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         ip = new_eip;
       }
     } else {
@@ -2968,21 +3247,28 @@ void emu88::execute(void) {
       emu88_uint8 ret_cpl = new_cs & 3;
       if (protected_mode() && !v86_mode() && ret_cpl > cpl) {
         emu88_uint16 new_sp = pop_word();
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         emu88_uint16 new_ss = pop_word();
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_CS, new_cs, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
+        load_segment(seg_SS, new_ss, ret_cpl);
+        if (exception_pending) { if (!dpmi_exc_dispatched) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; set_esp(saved_esp_retf); } break; }
         cpl = ret_cpl;
-        load_segment(seg_CS, new_cs);
         ip = new_ip;
-        load_segment(seg_SS, new_ss);
         regs[reg_SP] = new_sp;
         invalidate_segments_for_cpl();
       } else if (protected_mode() && !v86_mode() && ret_cpl < cpl) {
+        set_esp(saved_esp_retf);
         raise_exception(13, new_cs & 0xFFFC);
       } else {
         load_segment(seg_CS, new_cs);
+        if (exception_pending) { if (!dpmi_exc_dispatched) set_esp(saved_esp_retf); break; }
         ip = new_ip;
       }
     }
     break;
+  }
 
   //--- INT 3 ---
   case 0xCC:
@@ -3000,10 +3286,22 @@ void emu88::execute(void) {
     emu88_uint8 vec = fetch_ip_byte();
     // In V86 mode with IOPL < 3, #GP(0) for monitor to handle
     if (v86_mode() && get_iopl() < 3) {
+      // Trace V86 INT 21h calls (file I/O during DOS4GW init)
+      if (vec == 0x21) {
+        static int v86_int21_count = 0;
+        if (v86_int21_count < 50) {
+          v86_int21_count++;
+          fprintf(stderr, "[V86-INT21] AH=%02X BX=%04X CX=%04X DX=%04X DS=%04X CS:IP=%04X:%04X\n",
+                  get_reg8(reg_AH), regs[reg_BX], regs[reg_CX], regs[reg_DX],
+                  sregs[seg_DS], sregs[seg_CS], insn_ip);
+        }
+      }
       raise_exception(13, 0);
       break;
     }
-    if (protected_mode()) do_interrupt_pm(vec, false, 0, true);
+    if (protected_mode()) {
+      do_interrupt_pm(vec, false, 0, true);
+    }
     else do_interrupt(vec);
     break;
   }
@@ -3044,6 +3342,13 @@ void emu88::execute(void) {
         flags = ((new_flags & ~(emu88_uint16)EFLAG_IOPL_MASK) | preserved) | 0x0002;
       }
     } else if (protected_mode()) {
+      // Check NT flag — if set, do task switch back via backlink
+      if (flags & EFLAG_NT) {
+        emu88_uint16 backlink = read_linear16(tr_cache.base);
+        task_switch(backlink, false, true);
+        break;
+      }
+
       if (op_size_32) {
         emu88_uint32 new_eip = pop_dword();
         emu88_uint32 new_cs = pop_dword() & 0xFFFF;
@@ -3086,15 +3391,37 @@ void emu88::execute(void) {
             // Outer privilege: pop ESP and SS
             emu88_uint32 new_esp = pop_dword();
             emu88_uint16 new_ss = pop_dword() & 0xFFFF;
+            // Trace IRET from ring 0 to ring 3 (GP handler return)
+            {
+              static int iret_trace = 0;
+              if (cpl == 0 && ret_cpl == 3 && iret_trace < 5) {
+                iret_trace++;
+                fprintf(stderr, "[IRET-TRACE] #%d: ring %d→%d CS:EIP=%04X:%08X EFLAGS=%08X SS:ESP=%04X:%08X\n",
+                        iret_trace, cpl, ret_cpl, (uint16_t)new_cs, new_eip, new_eflags,
+                        new_ss, new_esp);
+              }
+            }
+            // Use cpl_override to check with target privilege level
+            load_segment(seg_CS, new_cs, ret_cpl);
+            if (exception_pending) break;
+            load_segment(seg_SS, new_ss, ret_cpl);
+            if (exception_pending) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; break; }
+            // All checks passed — commit
             set_eflags((new_eflags & 0x003FFFFF) | 0x0002);
-            cpl = ret_cpl;  // Update CPL before loading segments
-            load_segment(seg_CS, new_cs);
+            cpl = ret_cpl;
             ip = new_eip;
-            load_segment(seg_SS, new_ss);
             set_esp(new_esp);
             invalidate_segments_for_cpl();
           } else {
-            set_eflags((new_eflags & 0x003FFFFF) | 0x0002);
+            // Same privilege IRETD: CPL>0 cannot change IOPL; CPL>IOPL cannot change IF
+            if (cpl > 0) {
+              emu88_uint32 mask = 0x003FFFFF & ~(emu88_uint32)EFLAG_IOPL_MASK;
+              if (cpl > get_iopl()) mask &= ~(emu88_uint32)FLAG_IF;
+              emu88_uint32 preserved = get_eflags() & ~mask;
+              set_eflags((preserved | (new_eflags & mask)) | 0x0002);
+            } else {
+              set_eflags((new_eflags & 0x003FFFFF) | 0x0002);
+            }
             load_segment(seg_CS, new_cs);
             ip = new_eip;
           }
@@ -3107,15 +3434,28 @@ void emu88::execute(void) {
         if (ret_cpl > cpl) {
           emu88_uint16 new_sp = pop_word();
           emu88_uint16 new_ss = pop_word();
-          flags = (new_flags & 0x7FD7) | 0x0002;
-          cpl = ret_cpl;  // Update CPL before loading segments
-          load_segment(seg_CS, new_cs);
+          // Use cpl_override to check with target privilege level
+          load_segment(seg_CS, new_cs, ret_cpl);
+          if (exception_pending) break;
+          load_segment(seg_SS, new_ss, ret_cpl);
+          if (exception_pending) { sregs[seg_CS] = (sregs[seg_CS] & 0xFFFC) | cpl; break; }
+          // All checks passed — commit
+          { uint8_t oi = (flags >> 12) & 3; flags = (new_flags & 0x7FD7) | 0x0002; uint8_t ni = (flags >> 12) & 3;
+            if (ni != oi) { static int il = 0; if (il < 10) { il++; fprintf(stderr, "[IOPL-IRET16-PC] %d→%d flags=%04X at %04X:%08X\n", oi, ni, flags, sregs[seg_CS], insn_ip); } } }
+          cpl = ret_cpl;
           ip = new_ip;
-          load_segment(seg_SS, new_ss);
           regs[reg_SP] = new_sp;
           invalidate_segments_for_cpl();
         } else {
-          flags = (new_flags & 0x7FD7) | 0x0002;
+          // Same privilege IRET16: CPL>0 cannot change IOPL; CPL>IOPL cannot change IF
+          if (cpl > 0) {
+            emu88_uint16 mask = 0x7FD7;
+            mask &= ~(emu88_uint16)EFLAG_IOPL_MASK;
+            if (cpl > get_iopl()) mask &= ~(emu88_uint16)FLAG_IF;
+            flags = ((flags & ~mask) | (new_flags & mask)) | 0x0002;
+          } else {
+            flags = (new_flags & 0x7FD7) | 0x0002;
+          }
           load_segment(seg_CS, new_cs);
           ip = new_ip;
         }
@@ -3129,7 +3469,8 @@ void emu88::execute(void) {
       } else {
         ip = pop_word();
         load_segment_real(seg_CS, pop_word());
-        flags = (pop_word() & 0x7FD7) | 0x0002;
+        { uint8_t oi = (flags >> 12) & 3; flags = (pop_word() & 0x7FD7) | 0x0002; uint8_t ni = (flags >> 12) & 3;
+          if (ni != oi) { static int il = 0; if (il < 10) { il++; fprintf(stderr, "[IOPL-IRET16-RM] %d→%d at %04X:%04X\n", oi, ni, sregs[seg_CS], ip); } } }
       }
     }
     break;
@@ -3230,18 +3571,13 @@ void emu88::execute(void) {
   //--- ESC (FPU escape, 0xD8-0xDF) ---
   case 0xD8: case 0xD9: case 0xDA: case 0xDB:
   case 0xDC: case 0xDD: case 0xDE: case 0xDF: {
-    // If CR0.EM is set, raise #NM (device not available)
-    if (cr0 & CR0_EM) {
+    // If CR0.EM or CR0.TS is set, raise #NM (device not available)
+    // CR0.TS is set by task switch; CWSDPMI uses this for lazy FPU context switching
+    if (cr0 & (CR0_EM | CR0_TS)) {
       raise_exception_no_error(7);
       break;
     }
-    // No FPU - consume modrm/displacement, but still touch memory for segment checks
-    emu88_uint8 modrm = fetch_ip_byte();
-    modrm_result mr = decode_modrm(modrm);
-    if (!mr.is_register) {
-      // Access the memory operand to trigger segment boundary checks (word access)
-      fetch_word(mr.seg, mr.offset);
-    }
+    execute_fpu(opcode);
     break;
   }
 
@@ -3871,6 +4207,7 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       switch (mr.reg_field) {
       case 0: // SLDT: store LDT selector
+        fprintf(stderr, "[SLDT] -> %04X at %04X:%08X\n", ldtr, sregs[seg_CS], insn_ip);
         set_rm16(mr, ldtr);
         break;
       case 1: // STR: store Task Register selector
@@ -3878,6 +4215,7 @@ void emu88::execute(void) {
         break;
       case 2: { // LLDT: load LDT register
         emu88_uint16 sel = get_rm16(mr);
+        fprintf(stderr, "[LLDT] sel=%04X at %04X:%08X (old ldtr=%04X)\n", sel, sregs[seg_CS], insn_ip, ldtr);
         ldtr = sel;
         if ((sel & 0xFFFC) == 0) {
           ldtr_cache.valid = false;
@@ -3981,6 +4319,7 @@ void emu88::execute(void) {
       modrm_result mr = decode_modrm(modrm);
       switch (mr.reg_field) {
       case 0: // SGDT: store 6 bytes (limit:base) to memory
+        fprintf(stderr, "[SGDT] base=%08X limit=%04X at %04X:%08X\n", gdtr_base, gdtr_limit, sregs[seg_CS], insn_ip);
         store_word(mr.seg, mr.offset, gdtr_limit);
         store_word(mr.seg, mr.offset + 2, gdtr_base & 0xFFFF);
         store_byte(mr.seg, mr.offset + 4, (gdtr_base >> 16) & 0xFF);
@@ -3992,12 +4331,17 @@ void emu88::execute(void) {
         store_byte(mr.seg, mr.offset + 4, (idtr_base >> 16) & 0xFF);
         store_byte(mr.seg, mr.offset + 5, (idtr_base >> 24) & 0xFF);
         break;
-      case 2: // LGDT: load 6 bytes from memory
+      case 2: { // LGDT: load 6 bytes from memory
+        uint16_t old_limit = gdtr_limit;
+        uint32_t old_base = gdtr_base;
         gdtr_limit = fetch_word(mr.seg, mr.offset);
         gdtr_base = fetch_word(mr.seg, mr.offset + 2) |
                     (emu88_uint32(fetch_byte(mr.seg, mr.offset + 4)) << 16) |
                     (emu88_uint32(fetch_byte(mr.seg, mr.offset + 5)) << 24);
+        fprintf(stderr, "[LGDT] base=%08X->%08X limit=%04X->%04X at %04X:%08X\n",
+                old_base, gdtr_base, old_limit, gdtr_limit, sregs[seg_CS], insn_ip);
         break;
+      }
       case 3: // LIDT: load 6 bytes from memory
         idtr_limit = fetch_word(mr.seg, mr.offset);
         idtr_base = fetch_word(mr.seg, mr.offset + 2) |
@@ -4103,15 +4447,16 @@ void emu88::execute(void) {
       case 0: {
         emu88_uint32 old_cr0 = cr0;
         cr0 = get_reg32(r);
-        // Task 4: CR0 mode transition handling
-        // When PE transitions 1->0 (entering real mode), segment caches
-        // retain their protected mode values until reloaded.
-        // When PE transitions 0->1 (entering protected mode), segment
-        // caches retain their real mode values. The next far JMP loads
-        // a proper protected mode CS selector.
-        // No special action needed here beyond storing the value,
-        // since load_segment() already checks protected_mode().
-        (void)old_cr0;
+        // CR0 mode transition handling:
+        // When PE transitions 1->0, set unreal_mode so effective_address
+        // keeps using cached segment bases until segments are reloaded.
+        if ((old_cr0 & CR0_PE) && !(cr0 & CR0_PE)) {
+          unreal_mode = true;
+        }
+        // When PE transitions 0->1, clear unreal_mode
+        if (!(old_cr0 & CR0_PE) && (cr0 & CR0_PE)) {
+          unreal_mode = false;
+        }
         break;
       }
       case 2: cr2 = get_reg32(r); break;

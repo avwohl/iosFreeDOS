@@ -19,3 +19,5 @@ fd/freedos.img
 fd/games/
 fd/GAMES.TXT
 dos/*.com
+*.log
+docs/

@@ -11,6 +11,15 @@ class emu88_mem {
   emu88_uint32 mem_size;
   bool a20_enabled;
 public:
+  emu88_uint32 watchpoint_addr = 0xFFFFFFFF;  // debug: physical addr to watch
+  bool ivt21_trap = false;  // temp: set by store_mem when IVT[21h] is modified
+
+  // VGA plane state (set by dos_machine for Mode X support)
+  bool vga_planar = false;        // true when unchained (Mode X), false for chain-4 (Mode 13h)
+  uint8_t vga_map_mask = 0x0F;    // Sequencer reg 2: which planes to write (bits 0-3)
+  uint8_t vga_read_map = 0;       // GC reg 4: which plane to read (0-3)
+  uint8_t vga_planes[4][65536];   // 4 planes × 64KB
+
   emu88_mem(emu88_uint32 size = 0x100000);  // default 1MB
   virtual ~emu88_mem();
 

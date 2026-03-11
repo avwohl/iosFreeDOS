@@ -3,6 +3,7 @@
 
 #include "emu88_mem.h"
 #include "emu88_trace.h"
+#include <cstdio>
 
 class emu88 {
 public:
@@ -138,6 +139,23 @@ public:
   bool in_exception;
   bool in_double_fault;
   bool exception_pending;  // Set by raise_exception to abort current instruction
+  bool dpmi_exc_dispatched; // Set by DPMI dispatch — inhibits ESP rollback in insn handlers
+  bool exc_dispatch_trace; // Debug: trace ESP after DPMI exception dispatch
+  bool unreal_mode;        // Set when CR0.PE transitions 1→0; cleared on far JMP/segment reload
+  int gp_trace_count;      // Instructions to trace after #GP dispatch (debug)
+  int rm_trace_count;      // Instructions to trace in real mode (debug)
+
+  // DPMI post-call trace
+  uint16_t dpmi_trace_func;     // 0 = none, 0x500/0x501 = pending trace
+  uint16_t dpmi_trace_ret_cs;   // return CS to match
+  uint32_t dpmi_trace_ret_eip;  // return EIP to match
+  uint32_t dpmi_trace_es_base;  // ES base at time of call (for 0500h buffer dump)
+  uint32_t dpmi_trace_edi;      // EDI at time of call (for 0500h buffer dump)
+
+  // INT 2Fh AX=1687h post-return trace
+  bool int2f_1687_trace_pending;  // true = waiting for return from INT 2Fh 1687h
+  uint16_t int2f_trace_ret_cs;    // return CS to match
+  uint32_t int2f_trace_ret_ip;    // return IP to match
 
   // Segment override state (per-instruction)
   int seg_override;       // -1 = none, 0-5 = seg index
@@ -158,6 +176,28 @@ public:
   // Parity lookup table
   emu88_uint8 parity_table[256];
 
+  // x87 FPU state
+  struct FPUState {
+    double regs[8];       // ST(0)-ST(7) as host doubles
+    uint8_t tags[8];      // Tag per register: 0=valid, 1=zero, 2=special, 3=empty
+    uint16_t cw;          // Control word
+    uint16_t sw;          // Status word
+  } fpu;
+
+  // FPU methods
+  void fpu_init();
+  void execute_fpu(emu88_uint8 opcode);
+
+  // FPU memory access helpers
+  double fpu_read_m32real(uint16_t seg, uint32_t off);
+  double fpu_read_m64real(uint16_t seg, uint32_t off);
+  double fpu_read_m80real(uint16_t seg, uint32_t off);
+  void fpu_write_m32real(uint16_t seg, uint32_t off, double val);
+  void fpu_write_m64real(uint16_t seg, uint32_t off, double val);
+  void fpu_write_m80real(uint16_t seg, uint32_t off, double val);
+  double fpu_round(double val);
+  void fpu_compare(double a, double b);
+
   // Constructor/destructor
   emu88(emu88_mem *memory);
   virtual ~emu88() = default;
@@ -175,9 +215,21 @@ public:
   virtual void halt_cpu(void);
   virtual void unimplemented_opcode(emu88_uint8 opcode);
 
+  // DPMI intercept — called before IDT lookup in do_interrupt_pm.
+  // Return true if handled (skip IDT dispatch).
+  virtual bool intercept_pm_int(emu88_uint8 vector, bool is_software_int,
+                                bool has_error_code, emu88_uint32 error_code) {
+    (void)vector; (void)is_software_int; (void)has_error_code; (void)error_code;
+    return false;
+  }
+
   // Protected mode interrupt dispatch
   void do_interrupt_pm(emu88_uint8 vector, bool has_error_code = false,
                        emu88_uint32 error_code = 0, bool is_software_int = false);
+
+  // Hardware task switching
+  void task_switch(emu88_uint16 new_tss_sel, bool is_call, bool is_iret,
+                   bool has_error_code = false, emu88_uint32 error_code = 0);
 
   // Exception handling
   void raise_exception(emu88_uint8 vector, emu88_uint32 error_code = 0);
@@ -215,7 +267,16 @@ public:
 
   // EFLAGS access (386+)
   emu88_uint32 get_eflags() const { return EMU88_MK32(flags, eflags_hi); }
-  void set_eflags(emu88_uint32 val) { flags = val & 0xFFFF; eflags_hi = (val >> 16) & 0xFFFF; }
+  void set_eflags(emu88_uint32 val) {
+    uint8_t old_iopl = (flags >> 12) & 3;
+    flags = val & 0xFFFF;
+    eflags_hi = (val >> 16) & 0xFFFF;
+    uint8_t new_iopl = (flags >> 12) & 3;
+    if (new_iopl != old_iopl) {
+      static int iopl_log = 0;
+      if (iopl_log < 5) { iopl_log++; fprintf(stderr, "[IOPL] %d→%d EFLAGS=%08X CS:IP=%04X:%08X\n", old_iopl, new_iopl, val, sregs[seg_CS], ip); }
+    }
+  }
 
   // Operand size helpers
   bool operand_32() const { return op_size_32; }
@@ -233,7 +294,7 @@ public:
   void set_sreg(emu88_uint8 s, emu88_uint16 val) { sregs[s] = val; }
 
   // Segment loading (updates descriptor cache)
-  void load_segment(int seg_idx, emu88_uint16 selector);
+  void load_segment(int seg_idx, emu88_uint16 selector, int cpl_override = -1);
   void load_segment_real(int seg_idx, emu88_uint16 selector);
 
   // Far control transfer (handles call gates in protected mode)

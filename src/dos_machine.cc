@@ -18,6 +18,7 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
       kbd_poll_count(0),
       kbd_poll_start_cycle(0),
       kbd_cmd_pending(0),
+      cmos_index(0),
       nic(nullptr), ne2000_base(0x300), ne2000_irq(3)
 {
   memset(pit_counter, 0, sizeof(pit_counter));
@@ -32,10 +33,26 @@ dos_machine::dos_machine(emu88_mem *memory, dos_io *io)
   memset(crtc_regs, 0, sizeof(crtc_regs));
   memset(bios_entry, 0, sizeof(bios_entry));
   memset(vga_dac, 0, sizeof(vga_dac));
+  memset(cmos_data, 0, sizeof(cmos_data));
+  vga_seq_index = 0;
+  memset(vga_seq_regs, 0, sizeof(vga_seq_regs));
+  vga_gc_index = 0;
+  memset(vga_gc_regs, 0, sizeof(vga_gc_regs));
+  memset(modex_composite, 0, sizeof(modex_composite));
   dac_write_index = 0;
   dac_read_index = 0;
   dac_component = 0;
   dac_pel_mask = 0xFF;
+  adlib_index = 0;
+  memset(adlib_regs, 0, sizeof(adlib_regs));
+  adlib_status = 0;
+  adlib_timer1_running = false;
+  adlib_timer1_start_cycle = 0;
+  memset(sb_dsp_data, 0, sizeof(sb_dsp_data));
+  sb_dsp_data_head = sb_dsp_data_tail = sb_dsp_data_count = 0;
+  sb_dsp_cmd = 0;
+  sb_dsp_cmd_pending = false;
+  sb_dsp_reset_active = false;
 }
 
 dos_machine::~dos_machine() {
@@ -45,12 +62,15 @@ dos_machine::~dos_machine() {
 // Simulate PIT counter decrement based on elapsed CPU cycles.
 // PIT runs at 1.193182 MHz; we approximate as cycles/4 for 4.77 MHz base.
 uint16_t dos_machine::pit_current_count(int ch) const {
-  uint16_t reload = pit_reload[ch] ? pit_reload[ch] : 0x10000;
+  // PIT count of 0 means 65536 — must use uint32_t to hold this
+  uint32_t reload = pit_reload[ch] ? pit_reload[ch] : 65536u;
   uint64_t elapsed_cycles = cycles - pit_load_cycle[ch];
   // PIT ticks ≈ CPU cycles / 4 (1.193 MHz vs 4.77 MHz)
   uint64_t pit_ticks = elapsed_cycles / 4;
-  uint16_t count = (uint16_t)((reload - (pit_ticks % reload)) & 0xFFFF);
-  return count ? count : (uint16_t)reload;
+  uint32_t pos = (uint32_t)(pit_ticks % reload);
+  uint16_t count = (uint16_t)((reload - pos) & 0xFFFF);
+  // Counter reads as 0 only transiently; for mode 2/3 it reloads immediately
+  return count ? count : (uint16_t)(reload & 0xFFFF);
 }
 
 //=============================================================================
@@ -76,6 +96,41 @@ uint16_t dos_machine::bda_r16(int off) {
 uint32_t dos_machine::bda_r32(int off) {
   return mem->fetch_mem16(0x400 + off) |
          ((uint32_t)mem->fetch_mem16(0x400 + off + 2) << 16);
+}
+
+//=============================================================================
+// CMOS initialization
+//=============================================================================
+
+void dos_machine::init_cmos() {
+  memset(cmos_data, 0, sizeof(cmos_data));
+
+  uint32_t total = mem->get_mem_size();
+  uint32_t base_kb = total >= 0xA0000 ? 640 : total / 1024;
+  uint32_t ext_kb = total > 0x100000 ? (total - 0x100000) / 1024 : 0;
+  if (ext_kb > 0xFFFF) ext_kb = 0xFFFF;
+
+  // Equipment byte: FPU present, boot from disk, VGA
+  cmos_data[0x14] = 0x2F;  // 80x25 VGA, 1 floppy, FPU
+
+  // Base memory (in KB, typically 640)
+  cmos_data[0x15] = base_kb & 0xFF;
+  cmos_data[0x16] = (base_kb >> 8) & 0xFF;
+
+  // Extended memory (KB above 1MB) - two register pairs report same value
+  cmos_data[0x17] = ext_kb & 0xFF;
+  cmos_data[0x18] = (ext_kb >> 8) & 0xFF;
+  cmos_data[0x30] = ext_kb & 0xFF;
+  cmos_data[0x31] = (ext_kb >> 8) & 0xFF;
+
+  // Diagnostic status: POST OK
+  cmos_data[0x0E] = 0x00;
+  // Shutdown status: normal
+  cmos_data[0x0F] = 0x00;
+
+  // Hard disk type: 47 = user-defined (in high nibble for drive 0)
+  cmos_data[0x12] = 0xF0;  // Type 15 (>8 heads) for drive 0
+  cmos_data[0x19] = 47;    // Extended type for drive 0
 }
 
 //=============================================================================
@@ -105,6 +160,19 @@ void dos_machine::init_machine() {
   pic_init_step = 0;
   pic_icw4_needed = false;
   pic_imr = 0xBC;  // Unmask IRQ0 (timer), IRQ1 (keyboard), IRQ6 (floppy)
+
+  // Initialize PIT (8254) - channel 0 to mode 3 (square wave), count 0 (=65536)
+  // This matches what a real BIOS does during POST for the 18.2 Hz timer tick
+  pit_access[0] = 3;      // lobyte/hibyte
+  pit_mode[0] = 3;        // square wave generator
+  pit_counter[0] = 0;     // count 0 = 65536
+  pit_reload[0] = 0;      // 0 means 65536
+  pit_load_cycle[0] = 0;  // loaded at cycle 0
+  pit_write_phase[0] = 0;
+  pit_read_phase[0] = 0;
+
+  // Initialize CMOS with memory size and equipment info
+  init_cmos();
 
   // Install mouse if enabled
   if (config.mouse_enabled && io->mouse_present()) {
@@ -153,6 +221,19 @@ void dos_machine::init_ivt() {
     uint32_t ivt_addr = vec * 4;
     mem->store_mem16(ivt_addr,     bios_entry[vec]);
     mem->store_mem16(ivt_addr + 2, 0xF000);
+  }
+
+  // PM default INT handler stubs at F000:ED00 + vec*4
+  // Each stub: F1 (BIOS trap), vector_byte, CB (RETF)
+  // Used as "previous handler" when DPMI clients chain interrupts.
+  // Called via CALL FAR so they must RETF (not IRET).
+  for (int vec = 0; vec < 256; vec++) {
+    uint16_t entry = 0xED00 + vec * 4;
+    uint32_t addr = BIOS_ROM_BASE + entry;
+    mem->store_mem(addr,     BIOS_TRAP_OPCODE);
+    mem->store_mem(addr + 1, (uint8_t)vec);
+    mem->store_mem(addr + 2, 0xCB);  // RETF (for CALL FAR chains)
+    pm_int_default_entry[vec] = entry;
   }
 
   // INT 1Eh -> Disk parameter table (set up in install_bios_stubs)
@@ -264,6 +345,43 @@ void dos_machine::install_bios_stubs() {
     xms_handles[i].size_kb = 0;
     xms_handles[i].lock_count = 0;
   }
+
+  // DPMI mode switch entry point at F000:EFDC
+  // F1 FD = BIOS trap opcode + DPMI mode switch marker
+  // CB    = RETF (never reached; trap handler sets up PM and returns directly)
+  dpmi.mode_switch_off = 0xEFDC;
+  uint32_t dpmi_sw_addr = BIOS_ROM_BASE + dpmi.mode_switch_off;
+  mem->store_mem(dpmi_sw_addr,     BIOS_TRAP_OPCODE);
+  mem->store_mem(dpmi_sw_addr + 1, 0xFD);  // DPMI mode switch marker
+  mem->store_mem(dpmi_sw_addr + 2, 0xCB);  // RETF
+
+  // DPMI real-mode callback return stub at F000:EFE0
+  // F1 FC = BIOS trap opcode + DPMI RM return marker
+  // CF    = IRET (never reached)
+  dpmi.rm_return_off = 0xEFE0;
+  uint32_t dpmi_ret_addr = BIOS_ROM_BASE + dpmi.rm_return_off;
+  mem->store_mem(dpmi_ret_addr,     BIOS_TRAP_OPCODE);
+  mem->store_mem(dpmi_ret_addr + 1, 0xFC);  // DPMI RM return marker
+  mem->store_mem(dpmi_ret_addr + 2, 0xCF);  // IRET
+
+  // DPMI raw PM→RM mode switch trap at F000:EFE4
+  // F1 FB = BIOS trap opcode + PM→RM raw switch marker
+  // CB    = RETF (never reached)
+  dpmi.raw_pm_to_rm_off = 0xEFE4;
+  uint32_t dpmi_raw_addr = BIOS_ROM_BASE + dpmi.raw_pm_to_rm_off;
+  mem->store_mem(dpmi_raw_addr,     BIOS_TRAP_OPCODE);
+  mem->store_mem(dpmi_raw_addr + 1, 0xFB);  // PM→RM raw switch marker
+  mem->store_mem(dpmi_raw_addr + 2, 0xCB);  // RETF (never reached)
+
+  // DPMI exception handler return trap at F000:EFE8
+  // F1 FA = BIOS trap opcode + exception return marker
+  dpmi.exc_return_off = 0xEFE8;
+  uint32_t dpmi_exc_ret_addr = BIOS_ROM_BASE + dpmi.exc_return_off;
+  mem->store_mem(dpmi_exc_ret_addr,     BIOS_TRAP_OPCODE);
+  mem->store_mem(dpmi_exc_ret_addr + 1, 0xFA);  // Exception return marker
+  mem->store_mem(dpmi_exc_ret_addr + 2, 0xCB);  // RETF (never reached)
+
+  dpmi.active = false;
 }
 
 //=============================================================================
@@ -366,7 +484,16 @@ bool dos_machine::run_batch(int count) {
       tick_cycle_mark = cycles;
 
       if (video_mode == 0x13) {
-        io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+        if (mem->vga_planar) {
+          // Mode X: composite 4 planes into linear buffer
+          // CRTC start address determines which page is displayed
+          uint16_t crtc_start = (crtc_regs[12] << 8) | crtc_regs[13];
+          for (int i = 0; i < 320 * 200; i++)
+            modex_composite[i] = mem->vga_planes[i & 3][crtc_start + (i >> 2)];
+          io->video_refresh_gfx(modex_composite, 320, 200, vga_dac);
+        } else {
+          io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+        }
       } else {
         uint32_t base = vram_base();
         io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
@@ -388,6 +515,24 @@ bool dos_machine::run_batch(int count) {
       cycles = tick_cycle_mark + CYCLES_PER_TICK;
     } else {
       execute();
+      static long exec_count = 0;
+      exec_count++;
+      if (exec_count == 1 || exec_count == 100000 || exec_count == 1000000 ||
+          (exec_count % 10000000 == 0))
+        fprintf(stderr, "[EXEC-COUNT] execute() called %ld times, halted=%d, IP=%04X:%08X cycles=%llu planar=%d vmode=%d\n",
+                exec_count, halted, sregs[seg_CS], ip, cycles, mem->vga_planar?1:0, video_mode);
+      // Dump boot sector at the stuck address
+      if (exec_count == 100000 && ip == 0x7C31) {
+        fprintf(stderr, "[BOOT-STUCK] Code at 7C20-7C50:\n");
+        for (int a = 0x7C20; a < 0x7C50; a += 16) {
+          fprintf(stderr, "  %04X:", a);
+          for (int b = 0; b < 16; b++)
+            fprintf(stderr, " %02X", mem->fetch_mem(a + b));
+          fprintf(stderr, "\n");
+        }
+        fprintf(stderr, "[BOOT-STUCK] AX=%04X BX=%04X CX=%04X DX=%04X flags=%04X\n",
+                regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX], flags);
+      }
     }
 
     // Timer tick (cycle-based: 18.2 Hz at 4.77 MHz)
@@ -399,6 +544,31 @@ bool dos_machine::run_batch(int count) {
         bda_w8(bda::TIMER_ROLLOVER, 1);
       }
       bda_w32(bda::TIMER_COUNT, ticks);
+
+      static int timer_log = 0;
+      if (timer_log < 10 || (timer_log % 1000 == 0)) {
+        // Check DOOM's ticcount at linear 0x498E3C (CS_base 0x400000 + 0x98E3C)
+        uint32_t ticcount_addr = 0x498E3C;
+        int32_t doom_ticcount = (mem->get_mem_size() > ticcount_addr + 4) ?
+          (int32_t)(mem->fetch_mem(ticcount_addr) | (mem->fetch_mem(ticcount_addr+1) << 8) |
+                    (mem->fetch_mem(ticcount_addr+2) << 16) | (mem->fetch_mem(ticcount_addr+3) << 24)) : -1;
+        // Check BDA timer count and VGA framebuffer
+        uint32_t bda_timer = bda_r32(bda::TIMER_COUNT);
+        uint32_t vga_sum = 0;
+        if (video_mode == 0x13) {
+          if (mem->vga_planar) {
+            for (int i = 0; i < 16000; i += 250)
+              vga_sum += mem->vga_planes[0][i];
+          } else {
+            for (int i = 0; i < 320*200; i += 1000)
+              vga_sum += mem->fetch_mem(VGA_VRAM_BASE + i);
+          }
+        }
+        fprintf(stderr, "[TIMER-TICK] #%d vec=0x%02X imr=0x%02X IF=%d pm=%d ticcount=%d bda=%u vga=%u CS:IP=%04X:%08X cycles=%llu\n",
+                timer_log, pic_vector_base, pic_imr, get_flag(FLAG_IF)?1:0, protected_mode()?1:0, doom_ticcount,
+                bda_timer, vga_sum, sregs[seg_CS], ip, cycles);
+      }
+      timer_log++;
 
       if (get_flag(FLAG_IF) && !(pic_imr & 0x01))
         request_int(pic_vector_base);
@@ -415,8 +585,16 @@ bool dos_machine::run_batch(int count) {
     if (cycles - refresh_cycle_mark >= CYCLES_PER_REFRESH) {
       refresh_cycle_mark = cycles;
       if (video_mode == 0x13) {
-        // VGA mode 13h: send 320x200 framebuffer + palette
-        io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+        if (mem->vga_planar) {
+          // Mode X: composite 4 planes into linear buffer
+          // CRTC start address determines which page is displayed
+          uint16_t crtc_start = (crtc_regs[12] << 8) | crtc_regs[13];
+          for (int i = 0; i < 320 * 200; i++)
+            modex_composite[i] = mem->vga_planes[i & 3][crtc_start + (i >> 2)];
+          io->video_refresh_gfx(modex_composite, 320, 200, vga_dac);
+        } else {
+          io->video_refresh_gfx(mem->get_mem() + VGA_VRAM_BASE, 320, 200, vga_dac);
+        }
       } else {
         uint32_t base = vram_base();
         io->video_refresh(mem->get_mem() + base, screen_cols, screen_rows);
@@ -480,6 +658,81 @@ void dos_machine::dispatch_bios(uint8_t vector) {
 }
 
 void dos_machine::do_interrupt(emu88_uint8 vector) {
+  // Debug: count interrupts to verify do_interrupt is called
+  static long int_count = 0;
+  int_count++;
+  if (int_count == 1 || int_count == 100000 || int_count == 1000000)
+    fprintf(stderr, "[INT-COUNT] do_interrupt called %ld times, vector=%02X pm=%d\n", int_count, vector, protected_mode());
+
+  // Trace DPMI and program termination
+  if (vector == 0x2F && !protected_mode()) {
+    uint16_t ax = regs[reg_AX];
+    if (ax == 0x1687) {
+      static int dpmi_log = 0;
+      if (dpmi_log++ < 5)
+        fprintf(stderr, "[DPMI-DETECT] INT 2Fh AX=1687h called from %04X:%04X (all regs: AX=%04X BX=%04X CX=%04X DX=%04X SI=%04X DI=%04X DS=%04X ES=%04X)\n",
+                sregs[seg_CS], insn_ip,
+                regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
+                regs[reg_SI], regs[reg_DI], sregs[seg_DS], sregs[seg_ES]);
+      // Set up post-return trace to log what the handler returns
+      int2f_1687_trace_pending = true;
+      int2f_trace_ret_cs = sregs[seg_CS];
+      int2f_trace_ret_ip = ip;  // ip already points past INT 2Fh (CD 2F = 2 bytes)
+      // Enable real-mode trace after DPMI detection (reduced)
+      rm_trace_count = 200;
+    }
+  }
+  if (vector == 0x21 && !protected_mode()) {
+    uint8_t ah = regs[reg_AX] >> 8;
+    if (ah == 0x4C) {
+      fprintf(stderr, "[EXIT] INT 21h AH=4Ch AL=%02X from %04X:%04X\n",
+              regs[reg_AX] & 0xFF, sregs[seg_CS], insn_ip);
+      // Dump VGA text buffer to see error messages
+      fprintf(stderr, "[EXIT] VGA text screen:\n");
+      for (int row = 0; row < 25; row++) {
+        char line[81];
+        bool has_content = false;
+        for (int col = 0; col < 80; col++) {
+          uint8_t ch = mem->fetch_mem(0xB8000 + (row * 80 + col) * 2);
+          line[col] = (ch >= 0x20 && ch < 0x7F) ? ch : ' ';
+          if (ch > 0x20 && ch < 0x7F) has_content = true;
+        }
+        line[80] = 0;
+        if (has_content) fprintf(stderr, "[SCR %02d] %s\n", row, line);
+      }
+    } else if (ah == 0x4B) {
+      // EXEC - load and execute program
+      // DS:DX = filename
+      uint32_t fn_addr = ((uint32_t)sregs[seg_DS] << 4) + regs[reg_DX];
+      char fn[64];
+      for (int i = 0; i < 63; i++) {
+        fn[i] = mem->fetch_mem(fn_addr + i);
+        if (!fn[i]) break;
+      }
+      fn[63] = 0;
+      fprintf(stderr, "[EXEC] INT 21h AH=4Bh AL=%02X file='%s' from %04X:%04X\n",
+              regs[reg_AX] & 0xFF, fn, sregs[seg_CS], insn_ip);
+    }
+  }
+  // Log divide-by-zero exceptions with full context for debugging
+  if (vector == 0) {
+    fprintf(stderr, "[DIV0] %s CS=%04X IP=%04X AX=%04X BX=%04X CX=%04X DX=%04X "
+            "SI=%04X DI=%04X SP=%04X BP=%04X DS=%04X ES=%04X SS=%04X "
+            "EAX=%08X EDX=%08X cycles=%llu\n",
+            protected_mode() ? "PM" : "RM",
+            sregs[seg_CS], ip,
+            regs[reg_AX], regs[reg_BX], regs[reg_CX], regs[reg_DX],
+            regs[reg_SI], regs[reg_DI], regs[reg_SP], regs[reg_BP],
+            sregs[seg_DS], sregs[seg_ES], sregs[seg_SS],
+            get_reg32(reg_AX), get_reg32(reg_DX), cycles);
+  }
+
+  // DPMI detection — intercept INT 2Fh AX=1687h before any chain
+  if (vector == 0x2F && !protected_mode() && regs[reg_AX] == 0x1687) {
+    bios_int2fh();
+    return;
+  }
+
   // In protected mode, skip the IVT fast-path check — interrupts go through IDT
   if (protected_mode()) {
     emu88::do_interrupt(vector);
@@ -526,6 +779,94 @@ void dos_machine::unimplemented_opcode(emu88_uint8 opcode) {
       xms_dispatch();
       return;
     }
+    if (vector == 0xFD) {
+      if (dpmi.active) {
+        // Raw RM→PM mode switch (DPMI already initialized)
+        dpmi_raw_rm_to_pm();
+      } else {
+        // Initial DPMI mode switch entry - reached via FAR CALL in real mode
+        dpmi_mode_switch();
+      }
+      return;  // Mode switch sets IP directly; skip the RETF
+    }
+    if (vector == 0xFB) {
+      // Raw PM→RM mode switch - reached via FAR JMP from protected mode
+      dpmi_raw_pm_to_rm();
+      return;
+    }
+    if (vector == 0xFA) {
+      // DPMI exception handler return sentinel
+      // Reached via RETF from the client's exception handler.
+      // The RETF already popped return EIP and CS (our sentinel),
+      // so ESP now points to the error code field of the exception frame.
+      //
+      // Frame layout at current ESP:
+      //   +00: Error code
+      //   +04: Faulting EIP (possibly modified by handler)
+      //   +08: Faulting CS
+      //   +0C: Faulting EFLAGS
+      //   +10: Faulting ESP
+      //   +14: Faulting SS
+
+      // SS-relative offset → physical address
+      uint32_t frame_phys = seg_cache[seg_SS].base + get_esp();
+      /* uint32_t err  = mem->fetch_mem32(frame_phys + 0x00); */ // not needed
+      uint32_t new_eip    = mem->fetch_mem32(frame_phys + 0x04);
+      uint16_t new_cs     = (uint16_t)mem->fetch_mem32(frame_phys + 0x08);
+      uint32_t new_eflags = mem->fetch_mem32(frame_phys + 0x0C);
+      uint32_t new_esp    = mem->fetch_mem32(frame_phys + 0x10);
+      uint16_t new_ss     = (uint16_t)mem->fetch_mem32(frame_phys + 0x14);
+
+      fprintf(stderr, "[DPMI-EXC] Handler RETF: restoring %04X:%08X EFLAGS=%08X SS:ESP=%04X:%08X\n",
+              new_cs, new_eip, new_eflags, new_ss, new_esp);
+
+      // Restore CS
+      sregs[seg_CS] = new_cs;
+      {
+        uint16_t idx = new_cs >> 3;
+        bool use_ldt = (new_cs & 4) != 0;
+        uint32_t tbase = use_ldt ? ldtr_cache.base : gdtr_base;
+        uint8_t desc[8];
+        read_descriptor(tbase, idx, desc);
+        parse_descriptor(desc, seg_cache[seg_CS]);
+      }
+      ip = new_eip;
+
+      // Restore SS
+      sregs[seg_SS] = new_ss;
+      {
+        uint16_t idx = new_ss >> 3;
+        bool use_ldt = (new_ss & 4) != 0;
+        uint32_t tbase = use_ldt ? ldtr_cache.base : gdtr_base;
+        uint8_t desc[8];
+        read_descriptor(tbase, idx, desc);
+        parse_descriptor(desc, seg_cache[seg_SS]);
+      }
+      set_esp(new_esp);
+
+      // Restore EFLAGS
+      flags = (uint16_t)(new_eflags & 0xFFFF);
+      eflags_hi = (uint16_t)((new_eflags >> 16) & 0xFFFF);
+
+      // Restore DS, ES, FS, GS from saved pre-exception state
+      sregs[seg_DS] = dpmi.exc_save_ds;
+      sregs[seg_ES] = dpmi.exc_save_es;
+      sregs[seg_FS] = dpmi.exc_save_fs;
+      sregs[seg_GS] = dpmi.exc_save_gs;
+      seg_cache[seg_DS] = dpmi.exc_save_seg_cache[seg_DS];
+      seg_cache[seg_ES] = dpmi.exc_save_seg_cache[seg_ES];
+      seg_cache[seg_FS] = dpmi.exc_save_seg_cache[seg_FS];
+      seg_cache[seg_GS] = dpmi.exc_save_seg_cache[seg_GS];
+
+      dpmi.exc_handler_done = true;
+      return;
+    }
+    if (vector == 0xFC) {
+      // DPMI real-mode callback return sentinel
+      // Reached via IRET/RETF from a real-mode handler during dpmi_exec_rm
+      dpmi.in_rm_callback = false;
+      return;  // The nested execute loop in dpmi_exec_rm will exit
+    }
     // Normal BIOS trap stub (reached via interrupt chain)
     dispatch_bios(vector);
     if (waiting_for_key) {
@@ -537,7 +878,17 @@ void dos_machine::unimplemented_opcode(emu88_uint8 opcode) {
       ip -= 2;
       return;
     }
-    // IRET: pop IP, CS, FLAGS (they were pushed by the INT instruction).
+    if (protected_mode()) {
+      // In PM, BIOS stubs are reached via 32-bit CALL FAR from DPMI clients.
+      // The caller pushed 32-bit CS and 32-bit EIP. Pop them manually since
+      // the stub's CS segment is 16-bit and RETF would pop 16-bit values.
+      uint32_t ret_eip = pop_dword();
+      uint16_t ret_cs = (uint16_t)pop_dword();
+      ip = ret_eip;
+      load_segment(seg_CS, ret_cs);
+      return;
+    }
+    // Real mode: IRET — pop IP, CS, FLAGS (pushed by the INT instruction).
     // The BIOS handler modified `flags` directly (e.g. CF for error status).
     // Merge those result flags into the saved FLAGS so callers see them —
     // this matters when reached through the interrupt chain or via V86
@@ -573,12 +924,14 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
     case 0x21:
       if (pic_init_step == 1) {
         pic_vector_base = value; pic_init_step = 2;  // ICW2
+        fprintf(stderr, "[PIC] ICW2: vector_base=0x%02X pm=%d\n", value, protected_mode());
       } else if (pic_init_step == 2) {
         pic_init_step = pic_icw4_needed ? 3 : 0;  // ICW3, then ICW4 if needed
       } else if (pic_init_step == 3) {
         pic_init_step = 0;  // ICW4
       } else {
         pic_imr = value;     // OCW1
+        fprintf(stderr, "[PIC] IMR=0x%02X pm=%d\n", value, protected_mode());
       }
       break;
 
@@ -651,6 +1004,14 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
       mem->set_a20((value & 0x02) != 0);
       break;
 
+    // --- CMOS RTC ---
+    case 0x70:
+      cmos_index = value & 0x7F;
+      break;
+    case 0x71:
+      cmos_data[cmos_index] = value;
+      break;
+
     // --- CGA CRTC ---
     case 0x3D4: case 0x3B4:
       crtc_index = value;
@@ -660,6 +1021,31 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
       break;
     case 0x3D8: case 0x3B8: break;  // Mode control
     case 0x3D9: break;               // Color select
+
+    // --- VGA Sequencer ---
+    case 0x3C4: vga_seq_index = value; break;
+    case 0x3C5:
+      vga_seq_regs[vga_seq_index & 7] = value;
+      if (vga_seq_index == 2) {
+        // Map Mask register — which planes to write
+        mem->vga_map_mask = value & 0x0F;
+      }
+      if (vga_seq_index == 4) {
+        // Memory Mode register — bit 3 is chain-4
+        bool chain4 = (value & 0x08) != 0;
+        mem->vga_planar = !chain4;
+      }
+      break;
+
+    // --- VGA Graphics Controller ---
+    case 0x3CE: vga_gc_index = value; break;
+    case 0x3CF:
+      vga_gc_regs[vga_gc_index & 0x0F] = value;
+      if (vga_gc_index == 4) {
+        // Read Map Select register — which plane to read
+        mem->vga_read_map = value & 3;
+      }
+      break;
 
     // --- VGA DAC ---
     case 0x3C6: dac_pel_mask = value; break;
@@ -674,7 +1060,93 @@ void dos_machine::port_out(emu88_uint16 port, emu88_uint8 value) {
       }
       break;
 
+    // --- Adlib / OPL2 (ports 0x388-0x389) ---
+    case 0x388:
+      adlib_index = value;
+      break;
+    case 0x389:
+      fprintf(stderr, "[ADLIB] write reg 0x%02X = 0x%02X\n", adlib_index, value);
+      adlib_regs[adlib_index] = value;
+      if (adlib_index == 0x04) {
+        // Timer control register
+        if (value & 0x80) {
+          // Reset IRQ flags
+          adlib_status = 0;
+        }
+        if (value & 0x01) {
+          // Start timer 1
+          adlib_timer1_running = true;
+          adlib_timer1_start_cycle = cycles;
+        } else {
+          adlib_timer1_running = false;
+        }
+      }
+      break;
+
     default:
+      // Sound Blaster DSP (base 0x220, 16 ports)
+      if (port >= sb_base && port < sb_base + 0x10) {
+        uint8_t sb_port = port - sb_base;
+        switch (sb_port) {
+          case 0x06: // DSP Reset
+            if (value & 0x01) {
+              sb_dsp_reset_active = true;
+              sb_dsp_data_count = 0;
+              sb_dsp_data_head = sb_dsp_data_tail = 0;
+            } else if (sb_dsp_reset_active) {
+              sb_dsp_reset_active = false;
+              // Queue 0xAA (DSP ready signature)
+              sb_dsp_data[sb_dsp_data_tail] = 0xAA;
+              sb_dsp_data_tail = (sb_dsp_data_tail + 1) % 16;
+              sb_dsp_data_count = 1;
+              sb_dsp_cmd_pending = false;
+            }
+            break;
+          case 0x0C: // DSP Write Command/Data
+            if (sb_dsp_cmd_pending) {
+              // Parameter byte for current command
+              switch (sb_dsp_cmd) {
+                case 0x40: // Set Time Constant
+                  // value = time constant (256 - 1000000/rate)
+                  // Just accept and ignore
+                  break;
+                case 0x48: // Set DMA Block Size (low byte first, then high)
+                  break;
+                default: break;
+              }
+              sb_dsp_cmd_pending = false;
+            } else {
+              sb_dsp_cmd = value;
+              switch (value) {
+                case 0xE1: // Get DSP Version
+                  // SB 2.0 = version 2.01
+                  sb_dsp_data[sb_dsp_data_tail] = 0x02;
+                  sb_dsp_data_tail = (sb_dsp_data_tail + 1) % 16;
+                  sb_dsp_data[sb_dsp_data_tail] = 0x01;
+                  sb_dsp_data_tail = (sb_dsp_data_tail + 1) % 16;
+                  sb_dsp_data_count += 2;
+                  break;
+                case 0x40: // Set Time Constant (param follows)
+                case 0x48: // Set DMA Block Size (param follows)
+                  sb_dsp_cmd_pending = true;
+                  break;
+                case 0xD1: // Enable speaker
+                case 0xD3: // Disable speaker
+                case 0xD0: // Halt DMA
+                case 0xDA: // Exit auto-init DMA
+                  break; // No-op
+                case 0x14: // 8-bit single-cycle DMA output
+                case 0x1C: // 8-bit auto-init DMA output
+                case 0x91: // 8-bit high-speed auto-init DMA
+                  sb_dsp_cmd_pending = true;
+                  break;
+                default: break;
+              }
+            }
+            break;
+        }
+        return;
+      }
       // NE2000 NIC (32 ports at ne2000_base)
       if (nic && port >= ne2000_base && port < ne2000_base + 0x20) {
         nic->iowrite(port - ne2000_base, value);
@@ -719,12 +1191,27 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
         kbd_cmd_pending = 0;
         return mem->get_a20() ? 0x02 : 0x00;
       }
-      return 0;
+      // Return buffered scancode from hardware keyboard queue
+      if (kbd_hw_head != kbd_hw_tail) {
+        kbd_last_scancode = kbd_hw_buf[kbd_hw_head];
+        kbd_hw_head = (kbd_hw_head + 1) % KBD_HW_BUF_SIZE;
+        // If more scancodes pending, re-trigger IRQ 1
+        if (kbd_hw_head != kbd_hw_tail &&
+            get_flag(FLAG_IF) && !(pic_imr & 0x02))
+          request_int(pic_vector_base + 1);
+      }
+      return kbd_last_scancode;
     case 0x61: return port_b;
     case 0x64: return 0x14;  // Input buffer empty, self-test passed
 
     // --- Fast A20 gate ---
     case 0x92: return mem->get_a20() ? 0x02 : 0x00;
+
+    // --- CMOS RTC ---
+    case 0x71:
+      if (cmos_index >= 0x15 && cmos_index <= 0x35)
+        fprintf(stderr, "[CMOS-RD] reg=0x%02X val=0x%02X\n", cmos_index, cmos_data[cmos_index]);
+      return cmos_data[cmos_index];
 
     // --- CGA status ---
     case 0x3DA: {
@@ -738,6 +1225,14 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
       mtoggle ^= 0x09;
       return mtoggle;
     }
+
+    // --- VGA Sequencer ---
+    case 0x3C4: return vga_seq_index;
+    case 0x3C5: return vga_seq_regs[vga_seq_index & 7];
+
+    // --- VGA Graphics Controller ---
+    case 0x3CE: return vga_gc_index;
+    case 0x3CF: return vga_gc_regs[vga_gc_index & 0x0F];
 
     // --- VGA DAC ---
     case 0x3C6: return dac_pel_mask;
@@ -756,7 +1251,43 @@ emu88_uint8 dos_machine::port_in(emu88_uint16 port) {
     case 0x3D5: case 0x3B5:
       return crtc_regs[crtc_index];
 
+    // --- Adlib / OPL2 status ---
+    case 0x388: {
+      // Update timer 1 status: fires after ~80μs (≈380 CPU cycles at 4.77MHz)
+      if (adlib_timer1_running && (cycles - adlib_timer1_start_cycle) > 320) {
+        adlib_status |= 0xC0;  // Timer 1 expired + IRQ flag
+        adlib_timer1_running = false;
+      }
+      static int adlib_read_log = 0;
+      if (adlib_read_log < 30) {
+        adlib_read_log++;
+        fprintf(stderr, "[ADLIB] read status = 0x%02X (timer1_running=%d elapsed=%llu)\n",
+                adlib_status, adlib_timer1_running, adlib_timer1_running ? cycles - adlib_timer1_start_cycle : 0ULL);
+      }
+      return adlib_status;
+    }
+
     default:
+      // Sound Blaster DSP (base 0x220)
+      if (port >= sb_base && port < sb_base + 0x10) {
+        uint8_t sb_port = port - sb_base;
+        switch (sb_port) {
+          case 0x0A: // DSP Read Data
+            if (sb_dsp_data_count > 0) {
+              uint8_t val = sb_dsp_data[sb_dsp_data_head];
+              sb_dsp_data_head = (sb_dsp_data_head + 1) % 16;
+              sb_dsp_data_count--;
+              return val;
+            }
+            return 0xFF;
+          case 0x0C: // DSP Write Status (bit 7: 0=ready to write)
+            return 0x00;  // Always ready
+          case 0x0E: // DSP Read Status (bit 7: 1=data available)
+            return sb_dsp_data_count > 0 ? 0x80 : 0x00;
+          default:
+            return 0xFF;
+        }
+      }
       // NE2000 NIC (32 ports at ne2000_base)
       if (nic && port >= ne2000_base && port < ne2000_base + 0x20)
         return nic->ioread(port - ne2000_base);
@@ -790,6 +1321,7 @@ emu88_uint16 dos_machine::port_in16(emu88_uint16 port) {
 //=============================================================================
 
 void dos_machine::queue_key(uint8_t ascii, uint8_t scancode) {
+  // BIOS keyboard buffer (for INT 16h)
   uint16_t head = bda_r16(bda::KBD_BUF_HEAD);
   uint16_t tail = bda_r16(bda::KBD_BUF_TAIL);
   uint16_t buf_end = bda_r16(bda::KBD_BUF_END);
@@ -803,6 +1335,23 @@ void dos_machine::queue_key(uint8_t ascii, uint8_t scancode) {
   mem->store_mem(0x400 + tail,     ascii);
   mem->store_mem(0x400 + tail + 1, scancode);
   bda_w16(bda::KBD_BUF_TAIL, next_tail);
+
+  // Hardware keyboard buffer (for port 0x60 / IRQ 1)
+  // Queue make code (key press) and break code (key release)
+  int next_hw = (kbd_hw_tail + 1) % KBD_HW_BUF_SIZE;
+  if (next_hw != kbd_hw_head) {
+    kbd_hw_buf[kbd_hw_tail] = scancode;  // make code
+    kbd_hw_tail = next_hw;
+    // Also queue break code (scancode | 0x80)
+    next_hw = (kbd_hw_tail + 1) % KBD_HW_BUF_SIZE;
+    if (next_hw != kbd_hw_head) {
+      kbd_hw_buf[kbd_hw_tail] = scancode | 0x80;
+      kbd_hw_tail = next_hw;
+    }
+    // Fire keyboard IRQ (IRQ 1 = pic_vector_base + 1)
+    if (get_flag(FLAG_IF) && !(pic_imr & 0x02))
+      request_int(pic_vector_base + 1);
+  }
 
   waiting_for_key = false;
   kbd_poll_count = 0;

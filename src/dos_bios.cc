@@ -60,6 +60,15 @@ void dos_machine::video_set_mode(int mode) {
 
   if (mode == 0x13) {
     // VGA mode 13h: 320x200x256 linear framebuffer at A000:0000
+    // Set VGA sequencer for chain-4 mode (linear addressing)
+    vga_seq_regs[4] = 0x0E;  // Chain-4 on (bit 3), odd/even off (bit 2), ext mem (bit 1)
+    vga_seq_regs[2] = 0x0F;  // All planes writable
+    mem->vga_planar = false;  // Chain-4 = linear mode
+    mem->vga_map_mask = 0x0F;
+    mem->vga_read_map = 0;
+    memset(mem->vga_planes, 0, sizeof(mem->vga_planes));
+    crtc_regs[12] = 0;  // Clear CRTC start address
+    crtc_regs[13] = 0;
     for (uint32_t i = 0; i < 64000; i++)
       mem->store_mem(VGA_VRAM_BASE + i, 0);
     init_default_vga_palette(vga_dac);
@@ -293,7 +302,11 @@ dos_machine::disk_geom dos_machine::get_geometry(int drive) {
 void dos_machine::bios_int08h() {
   // Timer count is updated in run_batch, so just chain to INT 1Ch
   // (user timer hook). If 1Ch is still our stub, dispatch_bios handles it.
-  do_interrupt(0x1C);
+  // Skip INT 1Ch in PM — it's a real-mode BIOS concept; the PM DPMI client
+  // handles timer processing via its own INT 08h handler chain.
+  if (!protected_mode()) {
+    do_interrupt(0x1C);
+  }
 }
 
 //=============================================================================
@@ -965,6 +978,10 @@ void dos_machine::bios_int14h() {
 
 void dos_machine::bios_int15h() {
   uint8_t ah = get_reg8(reg_AH);
+  uint16_t ax = regs[reg_AX];
+  fprintf(stderr, "[INT15] AH=%02X AX=%04X BX=%04X CX=%04X DX=%04X EBX=%08X EDX=%08X\n",
+          ah, ax, regs[reg_BX], regs[reg_CX], regs[reg_DX],
+          get_reg32(reg_BX), get_reg32(reg_DX));
 
   switch (ah) {
     case 0x41:  // Wait for external event - not supported
@@ -1450,6 +1467,19 @@ void dos_machine::bios_int2fh() {
     return;
   }
 
+  if (ax == 0x1687) {
+    // DPMI detection — return our built-in DPMI server entry point
+    regs[reg_AX] = 0;          // DPMI available
+    regs[reg_BX] = 0x0001;     // 32-bit programs supported
+    set_reg8(reg_CL, 3);       // Processor type: 386
+    regs[reg_DX] = 0x005A;     // DPMI version 0.90
+    regs[reg_SI] = 0;          // No private data paragraph needed
+    sregs[seg_ES] = 0xF000;
+    regs[reg_DI] = dpmi.mode_switch_off;
+    fprintf(stderr, "[DPMI] Detection: returning entry F000:%04X\n", dpmi.mode_switch_off);
+    return;
+  }
+
   if (ax == 0x4300) {
     // XMS installed check - return AL=80h if extended memory available
     uint32_t ext_kb = 0;
@@ -1475,6 +1505,8 @@ void dos_machine::bios_int2fh() {
 
 void dos_machine::xms_dispatch() {
   uint8_t func = get_reg8(reg_AH);
+  fprintf(stderr, "[XMS] func=0x%02X AX=%04X BX=%04X DX=%04X EDX=%08X\n",
+          func, regs[reg_AX], regs[reg_BX], regs[reg_DX], get_reg32(reg_DX));
 
   switch (func) {
     case 0x00: {  // Get XMS version
@@ -1681,6 +1713,70 @@ void dos_machine::xms_dispatch() {
       regs[reg_AX] = 1;
       break;
     }
+    case 0x88: {  // Query Any Free Extended Memory (XMS 3.0, 32-bit)
+      uint32_t total_kb = 0;
+      if (mem->get_mem_size() > 0x100000)
+        total_kb = (mem->get_mem_size() - 0x100000) / 1024;
+      if (total_kb > 64) total_kb -= 64;
+      else total_kb = 0;
+      uint32_t alloc_kb = 0;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++)
+        if (xms_handles[i].allocated)
+          alloc_kb += xms_handles[i].size_kb;
+      uint32_t free_kb = total_kb > alloc_kb ? total_kb - alloc_kb : 0;
+      set_reg32(reg_AX, free_kb);   // EAX = largest free block in KB
+      set_reg32(reg_DX, free_kb);   // EDX = total free in KB
+      set_reg32(reg_CX, free_kb > 0 ? 0x00110000 : 0);  // ECX = highest ending address
+      regs[reg_BX] = 0;
+      break;
+    }
+    case 0x89: {  // Allocate Any Extended Memory Block (XMS 3.0, 32-bit)
+      uint32_t req_kb = get_reg32(reg_DX);
+      int handle = -1;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++) {
+        if (!xms_handles[i].allocated) { handle = i; break; }
+      }
+      if (handle < 0) {
+        regs[reg_AX] = 0;
+        regs[reg_BX] = 0xA1;
+        break;
+      }
+      uint32_t alloc_base = 0x110000;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++) {
+        if (xms_handles[i].allocated) {
+          uint32_t end = xms_handles[i].base + xms_handles[i].size_kb * 1024;
+          if (end > alloc_base) alloc_base = end;
+        }
+      }
+      uint32_t needed = req_kb * 1024;
+      if (req_kb > 0x100000 || alloc_base + needed > mem->get_mem_size()) {
+        regs[reg_AX] = 0;
+        regs[reg_BX] = 0xA0;
+        break;
+      }
+      xms_handles[handle].allocated = true;
+      xms_handles[handle].base = alloc_base;
+      xms_handles[handle].size_kb = req_kb;
+      xms_handles[handle].lock_count = 0;
+      regs[reg_AX] = 1;
+      regs[reg_DX] = handle + 1;
+      break;
+    }
+    case 0x8E: {  // Get EMB Handle Information (XMS 3.0, 32-bit)
+      int handle = regs[reg_DX] - 1;
+      if (handle < 0 || handle >= XMS_MAX_HANDLES || !xms_handles[handle].allocated) {
+        regs[reg_AX] = 0; regs[reg_BX] = 0xA2; break;
+      }
+      set_reg32(reg_DX, xms_handles[handle].size_kb);
+      regs[reg_BX] = xms_handles[handle].lock_count;
+      // Count free handles
+      int free_handles = 0;
+      for (int i = 0; i < XMS_MAX_HANDLES; i++)
+        if (!xms_handles[i].allocated) free_handles++;
+      set_reg32(reg_CX, free_handles);
+      regs[reg_AX] = 1;
+      break;
+    }
     case 0x10: {  // Request upper memory block
       regs[reg_AX] = 0;
       regs[reg_BX] = 0xB1;  // No UMBs available
@@ -1693,8 +1789,9 @@ void dos_machine::xms_dispatch() {
       break;
     }
     default:
-      regs[reg_AX] = 0;
-      regs[reg_BX] = 0x80;  // Function not implemented
+      fprintf(stderr, "[XMS] Unhandled function 0x%02X\n", func);
+      set_reg32(reg_AX, 0);  // Zero full EAX to avoid stale upper bits
+      regs[reg_BX] = 0x80;   // Function not implemented
       break;
   }
 }
