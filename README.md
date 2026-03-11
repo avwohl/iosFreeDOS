@@ -1,5 +1,10 @@
 # iosFreeDOS
 
+> **This project is abandonware.** Implementing a full 386 CPU, x87 FPU, and
+> DPMI DOS extender from scratch proved too complicated to maintain. The
+> successor project, [iosFreeDOS2](https://github.com/AdrianWohl/iosFreeDOS2),
+> uses the DOSBox emulator core for protected-mode emulation instead.
+
 An 8088/386 IBM PC emulator for iOS, macOS, and the command line. Runs FreeDOS
 and other DOS-compatible operating systems on your iPhone, iPad, or Mac.
 
